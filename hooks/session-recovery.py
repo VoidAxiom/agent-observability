@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 LINEAR_PROJECT = "agent_observability"
-COMMAND_CENTER = "VOI-1"
+COMMAND_CENTER = "VOI-303"
 
 
 def _git(cwd: str, *args: str) -> str:
