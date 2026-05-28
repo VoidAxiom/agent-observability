@@ -43,7 +43,9 @@ collector-down:
 	docker compose -f collector/docker-compose.yml down
 
 sdk-test:
-	@echo "TODO: VOI-308 implements this — see https://linear.app/voidaxiom/issue/VOI-308"
+	@test -d sdk/.venv || (cd sdk && uv venv --python 3.11 .venv)
+	cd sdk && uv pip install -e ".[dev]"
+	cd sdk && uv run pytest -q .
 
 app-build:
 	cd app && swift build -c release
