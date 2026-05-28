@@ -18,7 +18,7 @@ processors:
 
 exporters:
   clickhouse:
-    endpoint: tcp://host.docker.internal:9000
+    endpoint: tcp://host.docker.internal:${env:CH_NATIVE_PORT}
     database: ${env:CH_DATABASE}
     username: ${env:CH_USERNAME}
     password: ${env:CH_PASSWORD}
