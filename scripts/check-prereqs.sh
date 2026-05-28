@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
-# scripts/check-prereqs.sh — prerequisite verifier for llava-for-sensors.
+# scripts/check-prereqs.sh — prerequisite verifier for agent-observability.
 #
 # Verifies the tools required for the dev/build/test loop are installed and
-# at the required versions. Prints one line per check (✓ or ✗) and exits 0
-# if all pass, non-zero with diagnostics if any fail.
-#
-# Also runs a regression check that no runtime code in scripts/ or hooks/
-# reads from .template.answers (VOI-189; .template.answers is stale and
-# outside Claude's writable scope per PLAN.md §6).
+# at the required versions. Prints one line per check (✓ or ✗ or ℹ) and
+# exits 0 if all REQUIRED checks pass, non-zero with diagnostics if any
+# required tool is missing or wrong version. Optional tools that are absent
+# emit a soft ℹ note and do not fail the script.
 #
 # Usage:
 #   bash scripts/check-prereqs.sh
 #
 set -uo pipefail
 
-# Run from repo root regardless of where the user invokes this from, so
-# relative paths in checks (scripts/, hooks/, node_modules/.bin/) resolve
-# correctly.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
@@ -35,13 +30,20 @@ fail() {
   fail_count=$((fail_count + 1))
 }
 
+soft() {
+  printf "ℹ %s (optional, not required for M0)\n" "$1"
+  if [ -n "${2-}" ]; then
+    printf "    install when needed: %s\n" "$2"
+  fi
+}
+
 info() { printf "ℹ %s\n" "$1"; }
 
 # version_ge X Y → 0 if X ≥ Y, 1 otherwise. Splits each on '.', compares
 # components numerically. Tolerates non-numeric suffixes (e.g. "3.11.0rc1")
 # by stripping the first non-digit and everything after it within each
 # component. Uses POSIX awk so it works on default macOS/BSD/Linux without
-# requiring GNU coreutils (which `sort -V -C` would).
+# requiring GNU coreutils.
 version_ge() {
   awk -v a="$1" -v b="$2" 'BEGIN {
     n = split(a, ax, ".")
@@ -59,57 +61,120 @@ version_ge() {
   }'
 }
 
-# -- checks -----------------------------------------------------------------
+# -- REQUIRED: orchestration --------------------------------------------------
 
-# node ≥ 22.22.3 (required by likec4@1.57 per its engines field; bumped per VOI-225 PR #7 Codex P1)
-if command -v node >/dev/null 2>&1; then
-  v="$(node --version | sed 's/^v//')"
-  if version_ge "$v" "22.22.3"; then
-    pass "node $v (≥ 22.22.3 required)"
-  else
-    fail "node $v (need ≥ 22.22.3)" "https://nodejs.org/ — or 'brew install node'"
-  fi
+# git — table stakes.
+if command -v git >/dev/null 2>&1; then
+  pass "git $(git --version | awk '{print $3}')"
 else
-  fail "node not on PATH" "https://nodejs.org/ — or 'brew install node'"
+  fail "git not on PATH" "'brew install git'"
 fi
 
-# npm — bundled with node.
-if command -v npm >/dev/null 2>&1; then
-  pass "npm $(npm --version)"
+# gh — used for PR open, comments, review-gate.sh, sidecar.
+if command -v gh >/dev/null 2>&1; then
+  gh_ver="$(gh --version | head -1 | awk '{print $3}')"
+  pass "gh $gh_ver"
 else
-  fail "npm not on PATH" "ships with node; reinstall node"
+  fail "gh not on PATH" "'brew install gh' then 'gh auth login'"
 fi
 
-# uv (Python tooling)
-if command -v uv >/dev/null 2>&1; then
-  pass "uv $(uv --version 2>&1 | awk '{print $2}')"
-else
-  fail "uv not on PATH" "'brew install uv' or 'curl -LsSf https://astral.sh/uv/install.sh | sh'"
-fi
-
-# python3 ≥ 3.11
+# python3 ≥ 3.11 — used by:
+#   - sdk/ (the Python OTel SDK package, target Python ≥ 3.11 per VOI-308)
+#   - hooks/session-recovery.py, hooks/compaction-sidecar.sh
+#   - scripts/autonomous-sidecar.sh (JSON parsing helpers)
 if command -v python3 >/dev/null 2>&1; then
   v="$(python3 --version 2>&1 | awk '{print $2}')"
   if version_ge "$v" "3.11.0"; then
     pass "python3 $v (≥ 3.11 required)"
   else
-    fail "python3 $v (need ≥ 3.11)" "'brew install python@3.12' — or install via uv"
+    fail "python3 $v (need ≥ 3.11)" "'brew install python@3.12'"
   fi
 else
   fail "python3 not on PATH" "'brew install python@3.12'"
 fi
 
-# git-lfs — version line looks like 'git-lfs/3.4.0 (GitHub; darwin arm64; ...)'.
-if git lfs version >/dev/null 2>&1; then
-  v="$(git lfs version 2>&1 | sed -n 's|^git-lfs/\([^ ]*\).*|\1|p')"
-  [ -n "$v" ] || v="(installed; version unparsed)"
-  pass "git-lfs $v"
-else
-  fail "git-lfs not installed" "'brew install git-lfs && git lfs install'"
+# bash — version 4+ recommended for the scripts/ inventory; macOS ships
+# bash 3.2 by default but our scripts are POSIX-portable. Soft check.
+if command -v bash >/dev/null 2>&1; then
+  pass "bash $(bash --version | head -1 | sed 's/.*version \([0-9.]*\).*/\1/')"
 fi
 
-# likec4 — prefer local install (node_modules/.bin) once package.json lands
-# (P0.3); fall back to a global install for early-Phase-0 development.
+# -- REQUIRED: M0 stack -------------------------------------------------------
+
+# docker — used for:
+#   - clickhouse/docker-compose.yml (VOI-306)
+#   - collector/ (optional Docker mode for otelcol-contrib, VOI-307)
+# Accept Docker Desktop, colima, OrbStack — anything that provides a `docker` CLI.
+if command -v docker >/dev/null 2>&1; then
+  d_ver="$(docker --version 2>/dev/null | awk '{print $3}' | sed 's/,$//')"
+  pass "docker $d_ver"
+else
+  fail "docker not on PATH" "Docker Desktop / colima / OrbStack — any container runtime"
+fi
+
+# clickhouse-client — used by:
+#   - clickhouse/migrate.sh (VOI-306)
+#   - VOI-306/307/308/310 runtime verification steps
+# If absent, scripts can fall back to `docker exec` against the CH container,
+# but having the host client makes Makefile targets simpler.
+if command -v clickhouse-client >/dev/null 2>&1; then
+  ch_ver="$(clickhouse-client --version 2>&1 | head -1 | awk '{print $4}')"
+  pass "clickhouse-client $ch_ver"
+else
+  soft "clickhouse-client (Makefile falls back to 'docker exec' against the CH container)" \
+       "'brew install --cask clickhouse-client'"
+fi
+
+# -- OPTIONAL: M4 SwiftUI app -------------------------------------------------
+
+# xcodebuild — required for app/ packets (VOI-309, VOI-312, VOI-314, M4 packets).
+# Soft for M0 dev boxes that aren't building the app yet.
+if command -v xcodebuild >/dev/null 2>&1; then
+  xc_ver="$(xcodebuild -version 2>/dev/null | head -1 | awk '{print $2}')"
+  pass "xcodebuild $xc_ver"
+else
+  soft "xcodebuild (Xcode / Command Line Tools) — needed for VOI-309 onwards (the SwiftUI app)" \
+       "'xcode-select --install' or install full Xcode from the App Store"
+fi
+
+# -- OPTIONAL: collector binary mode + load testing ---------------------------
+
+# otelcol-contrib — used by collector/ (VOI-307). Optional because the
+# packet can choose Docker mode (otel/opentelemetry-collector-contrib image)
+# instead of a native binary.
+if command -v otelcol-contrib >/dev/null 2>&1; then
+  oc_ver="$(otelcol-contrib --version 2>&1 | head -1 | awk '{print $2}')"
+  pass "otelcol-contrib $oc_ver"
+else
+  soft "otelcol-contrib (VOI-307 can use the Docker image instead)" \
+       "'brew install opentelemetry-collector-contrib'"
+fi
+
+# telemetrygen — used by VOI-307 runtime verification (one-shot OTLP emit).
+# Ships with the otel-collector-contrib binary distribution; optional.
+if command -v telemetrygen >/dev/null 2>&1; then
+  pass "telemetrygen (OTel load-test helper)"
+else
+  soft "telemetrygen (VOI-307 smoke can use curl instead)" \
+       "'go install github.com/open-telemetry/opentelemetry-collector-contrib/cmd/telemetrygen@latest'"
+fi
+
+# -- OPTIONAL: architecture-as-code -------------------------------------------
+
+# node — needed by likec4 (architecture/ rendering). Optional until likec4
+# install lands in a dedicated packet.
+if command -v node >/dev/null 2>&1; then
+  v="$(node --version | sed 's/^v//')"
+  if version_ge "$v" "20.0.0"; then
+    pass "node $v"
+  else
+    soft "node $v is old; likec4 wants ≥ 20" "'brew upgrade node'"
+  fi
+else
+  soft "node (only required for likec4 architecture rendering)" "'brew install node'"
+fi
+
+# likec4 — architecture/ → docs/architecture/*.svg rendering. Soft.
 if [ -x "node_modules/.bin/likec4" ]; then
   v="$(node_modules/.bin/likec4 --version 2>&1 | tail -n 1)"
   pass "likec4 $v (local)"
@@ -117,47 +182,30 @@ elif command -v likec4 >/dev/null 2>&1; then
   v="$(likec4 --version 2>&1 | tail -n 1)"
   pass "likec4 $v (global)"
 else
-  fail "likec4 not on PATH and not in node_modules/.bin/" \
-       "'npm install' once package.json lands (P0.3) — or 'npm i -g likec4' for now"
+  soft "likec4 (for rendering architecture/system.c4 → docs/architecture/*.svg)" \
+       "'npm i -g likec4' or wait for the architecture-render packet"
+fi
+
+# uv — Python tool runner. Optional but useful for sdk/ workflows.
+if command -v uv >/dev/null 2>&1; then
+  pass "uv $(uv --version 2>&1 | awk '{print $2}')"
+else
+  soft "uv (Python project + tool runner)" "'brew install uv'"
 fi
 
 # /understand — Claude Code slash command from the understand-anything
 # plugin. This bash script cannot introspect Claude Code's loaded
 # skills/plugins, so we surface a verification hint instead of a hard
-# check. (The plugin must be installed in the Claude Code session that
-# runs the knowledge-graph regeneration step.)
+# check.
 info "/understand is a Claude Code skill — verify in-session by typing '/understand' (requires the understand-anything plugin)"
-
-# -- regression: no runtime reads of .template.answers ---------------------
-#
-# .template.answers is generated by orc-temp's init.sh at template install
-# time. PLAN.md §6 designates it as OUTSIDE Claude's writable scope and
-# intentionally stale — values were baked into hooks/scripts at generation
-# time and the file is unused at runtime thereafter. This check prevents a
-# future contributor from accidentally re-introducing a runtime dependency
-# on the stale file (which would silently rot).
-#
-# Comments are fine (lines starting with `//` or `#` after `file:line:` are
-# excluded). The grep deliberately excludes THIS script — searching for
-# `.template.answers` in scripts/check-prereqs.sh would otherwise self-match
-# on the pattern argument below.
-violations="$(grep -rIn --exclude='check-prereqs.sh' '\.template\.answers' scripts/ hooks/ 2>/dev/null \
-              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|#)' || true)"
-if [ -n "$violations" ]; then
-  fail "runtime reference to .template.answers detected (file is stale and outside Claude's writable scope)" \
-       "remove the runtime read; .template.answers is updated via the template tooling, not this repo"
-  printf "%s\n" "$violations" | sed 's/^/    /' >&2
-else
-  pass "no runtime reads of .template.answers (regression check)"
-fi
 
 # -- verdict ----------------------------------------------------------------
 
 echo
 if [ "$fail_count" -eq 0 ]; then
-  echo "all prerequisites satisfied."
+  echo "all REQUIRED prerequisites satisfied (optional tools noted above)."
   exit 0
 else
-  echo "$fail_count prerequisite(s) missing or wrong version — see diagnostics above." >&2
+  echo "$fail_count REQUIRED prerequisite(s) missing or wrong version — see diagnostics above." >&2
   exit 1
 fi

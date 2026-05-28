@@ -55,10 +55,13 @@ fi
 # flag-criteria, prefer zero findings over uncertain ones, state the
 # conditions for the bug, match codebase rigor, [P0]-[P3], correctness
 # verdict — plus this project's invariants.
-PROMPT="You are a STATELESS, ADVERSARIAL senior reviewer for llava-for-sensors,
-a multimodal fault-prediction model that fuses time-series sensor data with vision and language on a frozen Qwen2-VL-2B, trained locally on M2 Max. You have NO prior context and no stake. Review ONLY
-the diff below (changes vs ${BASE_REF}); judge only defects INTRODUCED by
-this change.
+PROMPT="You are a STATELESS, ADVERSARIAL senior reviewer for agent-observability,
+a local-first observability stack for multi-agent coding work (Claude Code +
+codex exec). Telemetry flows OTLP → OTel Collector → ClickHouse; native
+SwiftUI macOS dashboard reads ClickHouse. Python SDK with auto-instrumentors;
+nesting via inherited TRACEPARENT. You have NO prior context and no stake.
+Review ONLY the diff below (changes vs ${BASE_REF}); judge only defects
+INTRODUCED by this change.
 
 Flag an issue ONLY if ALL hold: it meaningfully impacts accuracy,
 performance, security, or maintainability; it is discrete and actionable;

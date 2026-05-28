@@ -12,7 +12,7 @@
 #   scripts/worktree-new.sh <branch> <dir-or-name> [base-ref]
 #
 # Arg 2 may be a bare NAME (no "/"): worktrees are then collected under a
-# single sibling parent `<parent-of-primary>/.llava-for-sensors-worktrees/<name>`
+# single sibling parent `<parent-of-primary>/.agent-observability-worktrees/<name>`
 # so the parent dir stays a single project entry, all ephemeral worktrees
 # live in one bulk-cleanable place, and an eventual primary-folder rename
 # doesn't churn them. An explicit path (containing "/") is honoured as-is.
@@ -61,7 +61,7 @@ PRIMARY="$(git rev-parse --show-toplevel)"
 case "$DIR" in
   */*) : ;;  # explicit path — honour as given
   *)
-    WT_ROOT="$(dirname "$PRIMARY")/.llava-for-sensors-worktrees"
+    WT_ROOT="$(dirname "$PRIMARY")/.agent-observability-worktrees"
     mkdir -p "$WT_ROOT"
     DIR="$WT_ROOT/$DIR" ;;
 esac

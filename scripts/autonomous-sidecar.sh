@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Autonomous-mode sidecar for llava-for-sensors.
+# Autonomous-mode sidecar for agent-observability.
 #
 # Prints a COMPACT (<30 line) tick: mantra → per-packet state + decision
 # → trailer. Designed so each ~20-min tick costs minimal context.
@@ -11,18 +11,18 @@ set -uo pipefail
 
 # Derive REPO from script location so the sidecar works from any clone.
 # Script lives at <repo>/scripts/autonomous-sidecar.sh, so two parents up
-# is <repo>. Override with LLAVA_FOR_SENSORS_REPO if running from outside
+# is <repo>. Override with AGENT_OBSERVABILITY_REPO if running from outside
 # the tree (rare). Use cd + pwd to canonicalize without depending on
 # bash-4-only realpath / GNU readlink.
 _SIDECAR_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _SIDECAR_REPO_DEFAULT="$(cd "${_SIDECAR_SCRIPT_DIR}/.." && pwd)"
-REPO="${LLAVA_FOR_SENSORS_REPO:-${_SIDECAR_REPO_DEFAULT}}"
+REPO="${AGENT_OBSERVABILITY_REPO:-${_SIDECAR_REPO_DEFAULT}}"
 # Worktrees default to siblings of the repo (per scripts/worktree-new.sh).
-WT_ROOT="${LLAVA_FOR_SENSORS_WORKTREES:-$(dirname "${REPO}")/.llava-for-sensors-worktrees}"
+WT_ROOT="${AGENT_OBSERVABILITY_WORKTREES:-$(dirname "${REPO}")/.agent-observability-worktrees}"
 STALL_MIN="${SIDECAR_STALL_MIN:-15}"
-GH_OWNER="${LLAVA_FOR_SENSORS_OWNER:-VoidAxiom}"
-GH_REPO_NAME="${LLAVA_FOR_SENSORS_REPO_NAME:-llava-for-sensors}"
-COMMAND_CENTER="${LLAVA_FOR_SENSORS_COMMAND_CENTER:-VOI-180}"
+GH_OWNER="${AGENT_OBSERVABILITY_OWNER:-VoidAxiom}"
+GH_REPO_NAME="${AGENT_OBSERVABILITY_REPO_NAME:-agent-observability}"
+COMMAND_CENTER="${AGENT_OBSERVABILITY_COMMAND_CENTER:-VOI-303}"
 
 cd "$REPO" 2>/dev/null || { echo "✗ sidecar: cannot cd $REPO" >&2; exit 1; }
 # .codex-runs/ is gitignored and may not exist on a fresh checkout;

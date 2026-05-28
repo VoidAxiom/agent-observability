@@ -35,8 +35,13 @@ Constraints:
   invent or alter facts/claims.
 
 Verification:
-<the exact command(s)/check to run to prove the work, e.g.
- `node --test scripts/ agent-otel/` or an inspection harness + what to look for>
+<the exact command(s)/check to run to prove the work — per-component:
+ `pytest sdk/ -q` for the Python SDK,
+ `otelcol-contrib validate --config collector/config.yaml` for the OTel Collector,
+ `clickhouse-client --multiquery --queries-file clickhouse/schema.sql` for ClickHouse schema,
+ `xcodebuild test -scheme AgentObservability` for the SwiftUI app,
+ `bash scripts/check-shell-syntax.sh bin/<script>.sh` for launch wrappers
+ — plus the runtime-verification step from the packet's spec if defined>
 
 Return structured output matching .codex/schemas/codex-result.schema.json.
 If structured output fails, return the equivalent markdown sections

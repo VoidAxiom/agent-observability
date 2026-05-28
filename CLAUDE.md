@@ -350,7 +350,7 @@ runs the live-verification step from the spec. If the live-run fails
 or the output doesn't match what the spec promised, REJECT the PR
 with the failure trace — even if all the mechanical gates passed.
 
-**Phase exit gates (§"Build loop" + PLAN.md §2.3) get a new step:**
+**Phase exit gates (§"Build loop" + the per-milestone deliverable in `docs/observability-spec.md`) get a new step:**
 
 > 7. Claude has personally run the integrated phase deliverable
 >    end-to-end and confirmed it works as advertised. Per-packet
@@ -561,7 +561,7 @@ writes:
 - `architecture/**` (LikeC4 source — architecture-as-code, a docs
   deliverable rendered to `docs/architecture/*.svg`)
 - `.understand-anything/**` (committed Understand-Anything knowledge graph,
-  regenerated end-of-phase per PLAN.md — a docs deliverable, not source)
+  regenerated end-of-phase per the M0–M5 milestone plan — a docs deliverable, not source)
 - `.gitignore` (root only — anchored exact-file rule, not `*.gitignore`)
 - `~/.claude/projects/<encoded-key>/memory/**` (Claude Code project memory
   — outside the project root by design)

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# scripts/queue-scan.sh — parallelization-gate queue scanner (VOI-229).
+# scripts/queue-scan.sh — parallelization-gate queue scanner.
 #
-# Lists Phase-0 packets that are dispatchable RIGHT NOW per the
-# parallel-by-default doctrine in `.claude/projects/<key>/memory/
-# parallel-by-default.md`:
+# Lists packets in the active phase that are dispatchable RIGHT NOW per
+# the parallel-by-default doctrine in CLAUDE.md § Delegation & parallelism.
 #
 #   A packet is dispatchable iff:
 #     - it is NOT already merged to main (no VOI-N in `git log origin/main`)
@@ -27,9 +26,9 @@
 # false dispatchable signal which is a soft prompt to investigate.
 #
 # Configurable via env:
-#   PHASE=0       — which phase to scan. Default 0. (Phase 1+ tables
-#                   are added below once the user blesses the phase
-#                   boundary per PLAN.md §2.3.)
+#   PHASE=0       — which phase to scan. Default 0 (= M0 walking skeleton).
+#                   Phase N tables are added below when the user blesses
+#                   the phase boundary per the build plan in CLAUDE.md.
 #   QUEUE_SCAN_VERBOSE=1 — print state summary even on exit 0.
 #
 set -uo pipefail
@@ -40,33 +39,37 @@ cd "$REPO_ROOT"
 
 PHASE="${PHASE:-0}"
 
-# ---- Phase 0 packet table -------------------------------------------------
-# Hard-coded mirror of Linear's Phase 0 packet set. Keys = VOI-N (canonical
-# Linear identifier); values = "P0.X short title". The set is closed —
-# this is what "Phase 0" is. New Phase 0 packets get added here in the
-# same PR that creates the Linear subissue.
+# ---- Phase 0 (M0) packet table -------------------------------------------
+# Hard-coded mirror of Linear's M0 packet set. Keys = VOI-N (canonical
+# Linear identifier); values = "M0.X short title". The set is closed —
+# this is what "M0" is. New M0 packets get added here in the same PR that
+# creates the Linear subissue.
+#
+# Source of truth for dep edges: the blockedBy graph on each VOI-N issue
+# in Linear (project `agent_observability`). When the graph changes, this
+# table is updated in the same PR that updates the Linear edge.
 
 declare -a PHASE_0_PACKETS=(
-  "VOI-191:P0.5 scope-guard expansion"
-  "VOI-189:P0.2 scripts/check-prereqs.sh"
-  "VOI-225:P0.3 pyproject.toml + package.json"
-  "VOI-224:P0.1 scaffold production-code dirs"
-  "VOI-190:P0.4 LikeC4 install + Understand-Anything verify"
-  "VOI-192:P0.6 architecture/landscape.c4 + container.c4"
-  "VOI-193:P0.7 eval/headline_figure.py + test_headline.py"
-  "VOI-194:P0.8 README + RUNNING_NOTES + TECH_REPORT skeletons"
-  "VOI-195:P0.9 first /understand + knowledge-graph.json"
-  "VOI-227:P0.10 scripts/ template-name cleanup"
-  "VOI-229:META parallelization gate (this PR)"
+  "VOI-304:M0.1 Repo layout scaffold + Makefile"
+  "VOI-306:M0.2 ClickHouse local + otel_* schema + smoke SELECT"
+  "VOI-307:M0.3 OTel Collector config + spans-to-ClickHouse smoke"
+  "VOI-308:M0.4 Python SDK scaffold + auto-instrument smoke"
+  "VOI-309:M0.5 SwiftUI app skeleton — List view bound to ClickHouse query"
+  "VOI-310:M0.6 Walking-skeleton integration — make demo end-to-end"
 )
 
-# Hard-coded deps: "depender:dep1 dep2 ..." pairs. Packets not listed
-# have no declared deps. Stacked-PR is allowed — a dep is "met" if its
-# branch exists on origin even if not yet merged.
+# Hard-coded deps: "depender:dep1 dep2 ..." pairs. Packets not listed have
+# no declared deps. Stacked-PR is allowed — a dep is "met" if its branch
+# exists on origin even if not yet merged.
+#
+# M0 critical path: VOI-304 → VOI-306 ┬→ VOI-307 → VOI-308 ─┐
+#                                     └→ VOI-309 ──────────┴→ VOI-310
 declare -a DEPS_PAIRS=(
-  "VOI-192:VOI-191"
-  "VOI-193:VOI-225"
-  "VOI-195:VOI-191"
+  "VOI-306:VOI-304"
+  "VOI-307:VOI-306"
+  "VOI-308:VOI-307"
+  "VOI-309:VOI-306"
+  "VOI-310:VOI-308 VOI-309"
 )
 
 # ---- Lookup helpers -------------------------------------------------------
@@ -106,8 +109,7 @@ MERGED_TOKENS=" $(git log "$MAIN_REF" --pretty=format:'%s' 2>/dev/null \
 
 # Dispatched: `sk/voi-<n>-...` branches that exist locally OR on origin.
 # Anchored regex: `^sk/voi-N` (CLAUDE.md branch convention) — stray refs
-# like `docs/voi-193-notes` no longer false-positive as dispatched
-# (VOI-229 PR #10 [P1] fix).
+# like `docs/voi-193-notes` no longer false-positive as dispatched.
 _extract_dispatch_tokens() {
   # stdin: refnames (one per line). stdout: VOI-N tokens of `sk/voi-N-*` refs.
   grep -oE '^sk/voi-[0-9]+' | sed 's|^sk/||' | tr '[:lower:]' '[:upper:]' | sort -u
@@ -124,14 +126,10 @@ DISPATCHED_REMOTE=$(git for-each-ref --format='%(refname:short)' refs/remotes/or
 DISPATCHED_TOKENS=" $(printf '%s\n%s\n' "$DISPATCHED_LOCAL" "$DISPATCHED_REMOTE" \
                       | sort -u | tr '\n' ' ') "
 
-# Deps-met readiness uses ORIGIN-ONLY refs (VOI-229 PR #10 [P2] fix). A
-# downstream impl provisions its worktree from `origin/sk/<dep>` — a
-# stale, unpushed local dep branch is NOT actually content-available to
-# the downstream packet, so it must not count as satisfying the dep.
-# Normalize the newline-delimited token list to space-delimited so the
-# `contains` helper (which matches `" $needle "` inside the haystack)
-# finds every token, not just the first — matches the pattern used by
-# DISPATCHED_TOKENS just above (VOI-229 PR #10 round-2 [P1] fix).
+# Deps-met readiness uses ORIGIN-ONLY refs. A downstream impl provisions
+# its worktree from `origin/sk/<dep>` — a stale, unpushed local dep branch
+# is NOT actually content-available to the downstream packet, so it must
+# not count as satisfying the dep.
 REMOTE_DISPATCHED_TOKENS=" $(printf '%s\n' "$DISPATCHED_REMOTE" | tr '\n' ' ') "
 
 contains() {
@@ -173,7 +171,7 @@ for pair in "${PACKETS[@]}"; do
   fi
 
   # Not merged, not dispatched. Check deps — origin-only for the stacked-PR
-  # readiness check (per [P2] fix; unpushed local refs cannot satisfy a dep).
+  # readiness check (unpushed local refs cannot satisfy a dep).
   pkt_deps=$(deps_of "$pkt")
   unmet=()
   for dep in $pkt_deps; do

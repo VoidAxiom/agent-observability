@@ -13,9 +13,13 @@ Target: **$1** — if empty, pick the highest-priority Linear issue in project
 **In Progress** before launch.
 
 You are the **director**, not the coder. `hooks/write-scope-guard.mjs`
-denies you `Edit | Write | MultiEdit` on `agent-otel/** scripts/** stack/** collector/**`. Code
-changes go through the `implementer` subagent, which runs in its own
-worktree and dispatches `codex exec` workers.
+denies you `Edit | Write | MultiEdit` on anything outside Claude's
+exclusive territory (`.claude/**`, `.codex/**`, `hooks/**`, `docs/**`,
+`**/*.md`, `architecture/**`, `.understand-anything/**`, `scripts/**`,
+`**/*.test.*`, `.gitignore`). Code changes (anything in `app/`,
+`clickhouse/`, `bin/`, `sdk/`, `collector/`, `config/`) go through the
+`implementer` subagent, which runs in its own worktree and dispatches
+`codex exec` workers.
 
 Steps:
 
