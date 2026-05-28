@@ -1,0 +1,47 @@
+# Secrets — never committed. Copied in by the operator.
+.env
+.env.local
+*.env
+!*.env.example
+
+# Python (sdk/)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node (only if any tooling shows up)
+node_modules/
+*.log
+
+# ClickHouse local data (docker-compose volume mount target if used)
+clickhouse/_data/
+clickhouse/_logs/
+
+# OTel Collector local artifacts
+collector/_data/
+
+# SwiftUI app build artifacts (Xcode + SPM)
+app/.build/
+app/build/
+app/DerivedData/
+app/.swiftpm/
+*.xcuserstate
+xcuserdata/
+
+# agent orchestration (per-packet codex-exec transcripts; local-only)
+.codex-runs/
+
+# runtime hook breadcrumbs (generated; .claude/settings.json IS tracked)
+.claude/hooks/
+
+# worktrees provisioned by scripts/worktree-new.sh sit at
+# ../.agent-observability-worktrees/ (out-of-repo) so nothing to ignore here
+
+# macOS
+.DS_Store

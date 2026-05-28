@@ -1,0 +1,113 @@
+// agent-observability — system topology (LikeC4 source).
+//
+// Locked decisions (see docs/observability-spec.md + CLAUDE.md § Project specifics):
+//   • Transport = A: stock OTel Collector (Go), no Rust daemon.
+//   • Emitter = Python with auto-instrumentors.
+//   • App = SwiftUI macOS, reads ClickHouse over HTTP :8123.
+//
+// Render with: likec4 export --output docs/architecture system.c4
+// (likec4 CLI install + render is a separate VOI packet; this file is the
+//  source of truth even before rendering is wired.)
+
+specification {
+  element actor
+  element system
+  element component
+  element store
+}
+
+model {
+  developer = actor 'Developer' {
+    description 'Runs Claude Code + codex exec on a Mac; consumer of the dashboard.'
+  }
+
+  claudeCode = system 'Claude Code session' {
+    description 'Anthropic CLI. Emits OTLP for its own spans; injects TRACEPARENT into spawned subprocesses.'
+  }
+
+  codexExec = system 'codex exec run' {
+    description 'OpenAI codex CLI invoked from Claude Code via bin/codex-spawn.sh. Inherits TRACEPARENT → spans nest under the Claude tool-execution span.'
+  }
+
+  agentObservability = system 'agent-observability' {
+    description 'Local-first observability stack — captures + correlates + renders multi-agent traces.'
+
+    pythonSdk = component 'Python SDK (sdk/)' {
+      description 'Provenance-stamping wrappers + auto-instrumentors. Emits OTLP via the OpenTelemetry Python SDK.'
+    }
+
+    launchWrappers = component 'Launch wrappers (bin/)' {
+      description 'cc-launch.sh + codex-spawn.sh. Set TRACEPARENT in spawned subprocess env so the trace tree is real, not timestamp-stitched.'
+    }
+
+    collector = component 'OTel Collector (collector/)' {
+      description 'Stock otelcol-contrib (Go). OTLP receiver → batch/redact/retry → ClickHouse exporter. Run as a local launchd service.'
+    }
+
+    clickhouse = store 'ClickHouse (clickhouse/)' {
+      description 'One instance, two table families: otel_* (from the OTel ClickHouse exporter) and agents.* (modeled). Join on trace_id.'
+    }
+
+    swiftApp = component 'SwiftUI app (app/)' {
+      description 'Native macOS. Three surfaces: menu-bar pulse, session galaxy, metrics deck. Polls ClickHouse over HTTP :8123, JSONEachRow.'
+    }
+
+    duckdb = component 'DuckDB adapter (optional)' {
+      description 'Read-only, ad-hoc SQL over completed runs. Not required for the app.'
+    }
+
+    signoz = component 'SigNoz UI (optional)' {
+      description 'Stock OTel UI on the same ClickHouse. Read-only consumer. Useful for cross-checking the native app.'
+    }
+  }
+
+  // Emission edges — TRACEPARENT carries nesting.
+  claudeCode -> agentObservability.pythonSdk 'emits OTLP (HTTP/gRPC)'
+  claudeCode -> agentObservability.launchWrappers 'invokes for child processes'
+  agentObservability.launchWrappers -> codexExec 'spawns with TRACEPARENT in env'
+  codexExec -> agentObservability.collector 'emits OTLP nested under parent span'
+  agentObservability.pythonSdk -> agentObservability.collector 'emits OTLP'
+
+  // Ingest + storage.
+  agentObservability.collector -> agentObservability.clickhouse 'writes via official exporter (otel_traces, otel_logs, otel_metrics_*)'
+
+  // Read paths.
+  agentObservability.swiftApp -> agentObservability.clickhouse 'reads via HTTP :8123 (JSONEachRow), actor-based query service polls every few seconds'
+  agentObservability.duckdb -> agentObservability.clickhouse 'reads via ClickHouse HTTP / native protocol'
+  agentObservability.signoz -> agentObservability.clickhouse 'reads via ClickHouse HTTP'
+
+  // Operator.
+  developer -> claudeCode 'launches via bin/cc-launch.sh'
+  developer -> agentObservability.swiftApp 'opens dashboard'
+}
+
+views {
+  view index {
+    title 'agent-observability — system context'
+    include *
+    autoLayout TopBottom
+  }
+
+  view emissionPath {
+    title 'Emission path (Claude Code → Codex → Collector → ClickHouse)'
+    include
+      claudeCode,
+      codexExec,
+      agentObservability.pythonSdk,
+      agentObservability.launchWrappers,
+      agentObservability.collector,
+      agentObservability.clickhouse
+    autoLayout LeftRight
+  }
+
+  view readPath {
+    title 'Read path (ClickHouse → SwiftUI app + companions)'
+    include
+      agentObservability.clickhouse,
+      agentObservability.swiftApp,
+      agentObservability.duckdb,
+      agentObservability.signoz,
+      developer
+    autoLayout LeftRight
+  }
+}
