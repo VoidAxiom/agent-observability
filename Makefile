@@ -54,4 +54,4 @@ app-run:
 	cd app && swift run -c release AgentObservability
 
 demo:
-	@echo "TODO: VOI-310 implements this — see https://linear.app/voidaxiom/issue/VOI-310"
+	bash scripts/demo-smoke.sh
