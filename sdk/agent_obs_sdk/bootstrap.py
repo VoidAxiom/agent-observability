@@ -60,6 +60,18 @@ def bootstrap() -> TracerProvider:
     provider = TracerProvider(resource=resource)
     exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
     provider.add_span_processor(BatchSpanProcessor(exporter))
+    existing = trace.get_tracer_provider()
+    if not isinstance(existing, trace.ProxyTracerProvider):
+        logger.warning(
+            "existing TracerProvider detected (%s); set_tracer_provider() "
+            "will be a no-op. bootstrap() returns the new (detached) provider "
+            "for caller introspection, but spans created via "
+            "trace.get_tracer() will go to the pre-existing global provider, "
+            "and force_flush()/shutdown() on the returned provider will NOT "
+            "flush those spans. To use the SDK's OTLP exporter, ensure no "
+            "other TracerProvider is installed before calling bootstrap().",
+            type(existing).__name__,
+        )
     trace.set_tracer_provider(provider)
     _PROVIDER = provider
 
