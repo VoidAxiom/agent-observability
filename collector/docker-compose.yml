@@ -14,5 +14,7 @@ services:
       CH_DATABASE: ${CH_DATABASE:-default}
       CH_USERNAME: ${CH_USERNAME:-default}
       CH_PASSWORD: ${CH_PASSWORD:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./config.yaml:/etc/otelcol-contrib/config.yaml:ro
