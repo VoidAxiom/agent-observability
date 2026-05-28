@@ -1,0 +1,46 @@
+# OTel Collector config for agent-observability (VOI-307, M0.3).
+# Pipeline: OTLP receivers -> batch processor -> clickhouse exporter.
+# Schema is owned by VOI-306 (clickhouse/schema.sql); create_schema is OFF.
+# M0 walking-skeleton scope: traces only. Logs + metrics pipelines land in
+# a later packet alongside SDK + schema support for the missing
+# otel_metrics_summary table.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  clickhouse:
+    endpoint: tcp://host.docker.internal:${env:CH_NATIVE_PORT}
+    database: ${env:CH_DATABASE}
+    username: ${env:CH_USERNAME}
+    password: ${env:CH_PASSWORD}
+    create_schema: false
+    traces_table_name: otel_traces
+    timeout: 5s
+    sending_queue:
+      queue_size: 100
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 30s
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [clickhouse]

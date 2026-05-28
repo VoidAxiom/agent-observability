@@ -1,0 +1,20 @@
+# OTel Collector local instance (VOI-307, M0.3).
+# Writes to the host's ClickHouse (VOI-306) via host.docker.internal:${CH_NATIVE_PORT}.
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:13133:13133"
+    environment:
+      CH_NATIVE_PORT: ${CH_NATIVE_PORT:-9000}
+      CH_DATABASE: ${CH_DATABASE:-default}
+      CH_USERNAME: ${CH_USERNAME:-default}
+      CH_PASSWORD: ${CH_PASSWORD:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config.yaml:/etc/otelcol-contrib/config.yaml:ro

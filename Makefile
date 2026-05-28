@@ -25,10 +25,22 @@ clickhouse-migrate:
 	bash clickhouse/migrate.sh
 
 collector-up:
-	@echo "TODO: VOI-307 implements this — see https://linear.app/voidaxiom/issue/VOI-307"
+	@test -f .env || cp .env.example .env
+	docker compose -f collector/docker-compose.yml --env-file .env up -d --wait
+	@printf 'waiting for collector health_check extension on 127.0.0.1:13133...\n'
+	@i=0; until curl -fsS http://127.0.0.1:13133/ >/dev/null 2>&1; do \
+		i=$$((i+1)); \
+		if [ $$i -ge 30 ]; then \
+			echo "collector health_check did not respond within 30s" >&2; \
+			docker compose -f collector/docker-compose.yml logs --tail=50 otel-collector >&2; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+	done
+	@echo "collector ready (health_check 200)"
 
 collector-down:
-	@echo "TODO: VOI-307 implements this — see https://linear.app/voidaxiom/issue/VOI-307"
+	docker compose -f collector/docker-compose.yml down
 
 sdk-test:
 	@echo "TODO: VOI-308 implements this — see https://linear.app/voidaxiom/issue/VOI-308"
