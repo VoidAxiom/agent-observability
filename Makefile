@@ -34,10 +34,10 @@ sdk-test:
 	@echo "TODO: VOI-308 implements this — see https://linear.app/voidaxiom/issue/VOI-308"
 
 app-build:
-	@echo "TODO: VOI-309 implements this — see https://linear.app/voidaxiom/issue/VOI-309"
+	cd app && swift build -c release
 
 app-run:
-	@echo "TODO: VOI-309 implements this — see https://linear.app/voidaxiom/issue/VOI-309"
+	cd app && swift run -c release AgentObservability
 
 demo:
 	@echo "TODO: VOI-310 implements this — see https://linear.app/voidaxiom/issue/VOI-310"
