@@ -1,0 +1,24 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3
+    ports:
+      - "127.0.0.1:${CH_HTTP_PORT:-8123}:8123"
+      - "127.0.0.1:${CH_NATIVE_PORT:-9000}:9000"
+    environment:
+      CLICKHOUSE_DB: ${CH_DATABASE:-default}
+      CLICKHOUSE_USER: ${CH_USERNAME:-default}
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    healthcheck:
+      test: ["CMD-SHELL", 'clickhouse-client --host=127.0.0.1 --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" --query ''SELECT 1''']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - ./_data:/var/lib/clickhouse
+      - ./_logs:/var/log/clickhouse-server

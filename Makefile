@@ -15,13 +15,14 @@ help:
 .PHONY: help clickhouse-up clickhouse-down clickhouse-migrate collector-up collector-down sdk-test app-build app-run demo
 
 clickhouse-up:
-	@echo "TODO: VOI-306 implements this — see https://linear.app/voidaxiom/issue/VOI-306"
+	@test -f .env || cp .env.example .env
+	docker compose -f clickhouse/docker-compose.yml --env-file .env up -d --wait
 
 clickhouse-down:
-	@echo "TODO: VOI-306 implements this — see https://linear.app/voidaxiom/issue/VOI-306"
+	docker compose -f clickhouse/docker-compose.yml down
 
 clickhouse-migrate:
-	@echo "TODO: VOI-306 implements this — see https://linear.app/voidaxiom/issue/VOI-306"
+	bash clickhouse/migrate.sh
 
 collector-up:
 	@echo "TODO: VOI-307 implements this — see https://linear.app/voidaxiom/issue/VOI-307"
