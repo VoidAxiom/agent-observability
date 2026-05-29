@@ -94,18 +94,27 @@ export function SignatureSpanCard({
     margin: 0,
   };
 
-  const metadata = formatTerminalComment(durationMs, inputTokens, outputTokens);
+  const visibleMetadata = formatTerminalComment(
+    durationMs,
+    inputTokens,
+    outputTokens,
+  );
+  const ariaMetadata = formatA11yMetadata(
+    durationMs,
+    inputTokens,
+    outputTokens,
+  );
 
   return (
     <article
       style={cardStyle}
       data-family={family}
-      aria-label={`Span ${name}, ${metadata}`}
+      aria-label={`Span ${name}, ${ariaMetadata}`}
     >
       <span aria-hidden="true" style={leftEdgeStyle} />
       <p style={familyLabelStyle}>{family}</p>
       <h3 style={nameStyle}>{name}</h3>
-      <p style={commentStyle}>{metadata}</p>
+      <p style={commentStyle}>{visibleMetadata}</p>
     </article>
   );
 }
@@ -115,6 +124,24 @@ function formatTerminalComment(
   inputTokens?: number,
   outputTokens?: number,
 ): string {
+  return `// ${formatMetadataParts(durationMs, inputTokens, outputTokens).join(" · ")}`;
+}
+
+function formatA11yMetadata(
+  durationMs: number,
+  inputTokens?: number,
+  outputTokens?: number,
+): string {
+  // Same content as the visible comment, but without the `// ` prefix so
+  // screen readers don't narrate "slash slash" at the head of every card.
+  return formatMetadataParts(durationMs, inputTokens, outputTokens).join(", ");
+}
+
+function formatMetadataParts(
+  durationMs: number,
+  inputTokens?: number,
+  outputTokens?: number,
+): string[] {
   const parts = [`${formatMs(durationMs)}`];
   if (typeof inputTokens === "number") {
     parts.push(`${formatTokens(inputTokens)} in`);
@@ -122,7 +149,7 @@ function formatTerminalComment(
   if (typeof outputTokens === "number") {
     parts.push(`${formatTokens(outputTokens)} out`);
   }
-  return `// ${parts.join(" · ")}`;
+  return parts;
 }
 
 function formatMs(ms: number): string {

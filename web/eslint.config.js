@@ -36,6 +36,8 @@ export default [
         Request: "readonly",
         btoa: "readonly",
         atob: "readonly",
+        TextEncoder: "readonly",
+        TextDecoder: "readonly",
         setTimeout: "readonly",
         clearTimeout: "readonly",
         Number: "readonly",

@@ -31,13 +31,24 @@ export interface ClickHouseConfig {
   password: string;
 }
 
+// Hostname grammar accepted by buildEndpointUrl. Conservative: DNS labels +
+// IPv4 + bracketed IPv6. Rejects userinfo (`@`), path (`/`), query (`?`),
+// fragment (`#`), and any other URL syntax that would silently retarget the
+// request when interpolated into a URL template.
+const HOSTNAME_RE = /^(?:\[[0-9a-fA-F:]+\]|[A-Za-z0-9][A-Za-z0-9.-]*)$/;
+
 export function loadConfigFromEnv(): ClickHouseConfig {
   const env = (import.meta as ImportMeta).env ?? {};
   const portRaw = env.VITE_CH_HTTP_PORT ?? "";
-  const portNum = typeof portRaw === "string" ? parseInt(portRaw, 10) : NaN;
+  // Use Number() not parseInt() so trailing garbage ("8123x") returns NaN
+  // instead of silently parsing as 8123.
+  const portNum = typeof portRaw === "string" ? Number(portRaw) : NaN;
   return {
     host: env.VITE_CH_HOST ?? "localhost",
-    port: Number.isFinite(portNum) && portNum > 0 ? portNum : 8123,
+    port:
+      Number.isFinite(portNum) && portNum > 0 && Number.isInteger(portNum)
+        ? portNum
+        : 8123,
     database: env.VITE_CH_DATABASE ?? "default",
     username: env.VITE_CH_USERNAME ?? "default",
     password: env.VITE_CH_PASSWORD ?? "",
@@ -45,15 +56,35 @@ export function loadConfigFromEnv(): ClickHouseConfig {
 }
 
 export function buildEndpointUrl(config: ClickHouseConfig): string {
-  const url = new URL(`http://${config.host}:${config.port}/`);
+  if (!HOSTNAME_RE.test(config.host)) {
+    throw new ClickHouseError(
+      `Invalid ClickHouse host ${JSON.stringify(config.host)}: must be a hostname, IPv4 address, or bracketed IPv6 address`,
+      0,
+    );
+  }
+  // Build via assignment rather than template interpolation so URL parser
+  // can't be fooled by characters that survive the regex check.
+  const url = new URL("http://placeholder/");
+  url.hostname = config.host.startsWith("[")
+    ? config.host.slice(1, -1)
+    : config.host;
+  url.port = String(config.port);
+  url.pathname = "/";
   url.searchParams.set("database", config.database);
   return url.toString();
 }
 
 function authorizationHeader(config: ClickHouseConfig): string {
   const credentials = `${config.username}:${config.password}`;
-  // btoa is available in the browser and in jsdom. Encode to base64.
-  return `Basic ${btoa(credentials)}`;
+  // btoa accepts only Latin1 codepoints, so a password containing accented
+  // characters or emoji would throw InvalidCharacterError. UTF-8-encode
+  // first via TextEncoder, then base64 the byte sequence.
+  const bytes = new TextEncoder().encode(credentials);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i] as number);
+  }
+  return `Basic ${btoa(binary)}`;
 }
 
 export async function fetchOnce(
