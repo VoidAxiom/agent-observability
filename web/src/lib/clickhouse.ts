@@ -44,22 +44,36 @@ export function loadConfigFromEnv(
   // docker-compose.yml, and the Swift app — falling back to the
   // `VITE_CH_*` prefix for web-only overrides during dev. vite.config.ts
   // adds `CH_` to `envPrefix` so Vite actually exposes them to client code.
-  const portRaw = env.CH_HTTP_PORT ?? env.VITE_CH_HTTP_PORT ?? "";
-  // Use Number() not parseInt() so trailing garbage ("8123x") returns NaN
-  // instead of silently parsing as 8123.
-  const portNum = typeof portRaw === "string" ? Number(portRaw) : NaN;
-  return {
-    host: env.CH_HOST ?? env.VITE_CH_HOST ?? "localhost",
+  const portRaw = env.CH_HTTP_PORT ?? env.VITE_CH_HTTP_PORT;
+  let port = 8123;
+  if (portRaw !== undefined && portRaw !== "") {
+    // Use Number() not parseInt() so trailing garbage ("8123x") returns NaN
+    // instead of silently parsing as 8123.
+    const portNum = typeof portRaw === "string" ? Number(portRaw) : NaN;
     // Cap to the WHATWG URL port range so an out-of-range value (e.g.
     // 65536) doesn't pass the local check only to be silently dropped by
     // `url.port`, which would otherwise default the endpoint to port 80.
-    port:
-      Number.isFinite(portNum) &&
-      portNum > 0 &&
-      portNum <= 65535 &&
-      Number.isInteger(portNum)
-        ? portNum
-        : 8123,
+    // CRITICAL: distinguish "unset" (use default 8123) from "set but
+    // invalid" (throw). Silently coercing a bad CH_HTTP_PORT=81234 to
+    // 8123 would mask env typos — the dev-proxy and SPA loader would
+    // happily point at the wrong port and the failure would look like
+    // a CH outage instead of a config typo.
+    if (
+      !Number.isFinite(portNum) ||
+      portNum <= 0 ||
+      portNum > 65535 ||
+      !Number.isInteger(portNum)
+    ) {
+      throw new ClickHouseError(
+        `Invalid CH_HTTP_PORT / VITE_CH_HTTP_PORT ${JSON.stringify(portRaw)}: must be an integer in [1, 65535]`,
+        0,
+      );
+    }
+    port = portNum;
+  }
+  return {
+    host: env.CH_HOST ?? env.VITE_CH_HOST ?? "localhost",
+    port,
     database: env.CH_DATABASE ?? env.VITE_CH_DATABASE ?? "default",
     username: env.CH_USERNAME ?? env.VITE_CH_USERNAME ?? "default",
     password: env.CH_PASSWORD ?? env.VITE_CH_PASSWORD ?? "",

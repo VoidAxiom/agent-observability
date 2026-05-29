@@ -25,14 +25,17 @@ export default defineConfig(({ mode }) => {
   // dev would 502 on every /ch and the failure would look like a CH
   // outage instead of an env typo. Bracket IPv6 + integer/range port +
   // hostname grammar all flow from the same one source of truth.
-  const chConfig = loadConfigFromEnv(env as ImportMetaEnv);
   let proxyTarget: string;
   try {
-    // assertConfigValid throws on bad host/port — keeps the loader and
-    // the dev-proxy in lockstep on what's a legal config. We separately
-    // build the URL (with query) and strip to the origin, since the
-    // proxy target must NOT include `?database=…` (the /ch rewrite
-    // produces /?database=… at ClickHouse).
+    // loadConfigFromEnv throws on a present-but-invalid CH_HTTP_PORT
+    // (rather than silently coercing to 8123) — catches typos like
+    // CH_HTTP_PORT=81234. assertConfigValid then throws on a bad host
+    // or a host/port the URL parser rejects. The combination keeps the
+    // loader and the dev-proxy in lockstep on what's a legal config.
+    // We separately build the URL (with query) and strip to the origin,
+    // since the proxy target must NOT include `?database=…` (the /ch
+    // rewrite produces /?database=… at ClickHouse).
+    const chConfig = loadConfigFromEnv(env as ImportMetaEnv);
     assertConfigValid(chConfig);
     const validated = new URL(buildEndpointUrl(chConfig));
     proxyTarget = `${validated.protocol}//${validated.host}`;

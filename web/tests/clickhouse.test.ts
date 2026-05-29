@@ -166,10 +166,37 @@ describe("loadConfigFromEnv", () => {
     expect(cfg.host).toBe("repo-standard");
   });
 
-  it("rejects out-of-range port values at the loader (defaults to 8123)", () => {
-    expect(loadConfigFromEnv(envFrom({ CH_HTTP_PORT: "65536" })).port).toBe(
-      8123,
+  it("throws on an explicitly-set but out-of-range CH_HTTP_PORT (does NOT silently default)", () => {
+    // Regression: an earlier impl silently coerced CH_HTTP_PORT=65536 to
+    // the default 8123, so a typo like CH_HTTP_PORT=81234 would boot the
+    // dev-proxy + SPA loader against the wrong port and the failure
+    // looked like a CH outage instead of a config typo. Now an
+    // explicitly-set invalid value throws at load — caught by
+    // vite.config.ts's try/catch around assertConfigValid and surfaced
+    // as a loud boot-time error.
+    expect(() => loadConfigFromEnv(envFrom({ CH_HTTP_PORT: "65536" }))).toThrow(
+      ClickHouseError,
     );
+    expect(() => loadConfigFromEnv(envFrom({ CH_HTTP_PORT: "81234" }))).toThrow(
+      ClickHouseError,
+    );
+    expect(() =>
+      loadConfigFromEnv(envFrom({ CH_HTTP_PORT: "8123x" })),
+    ).toThrow(ClickHouseError);
+    expect(() => loadConfigFromEnv(envFrom({ CH_HTTP_PORT: "0" }))).toThrow(
+      ClickHouseError,
+    );
+    expect(() => loadConfigFromEnv(envFrom({ CH_HTTP_PORT: "-1" }))).toThrow(
+      ClickHouseError,
+    );
+    expect(() => loadConfigFromEnv(envFrom({ CH_HTTP_PORT: "8123.5" }))).toThrow(
+      ClickHouseError,
+    );
+  });
+
+  it("uses the 8123 default when CH_HTTP_PORT is unset or empty (distinct from set-but-invalid)", () => {
+    expect(loadConfigFromEnv(envFrom({})).port).toBe(8123);
+    expect(loadConfigFromEnv(envFrom({ CH_HTTP_PORT: "" })).port).toBe(8123);
   });
 });
 
