@@ -1,9 +1,10 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import {
+  assertConfigValid,
+  buildEndpointUrl,
   ClickHouseError,
   loadConfigFromEnv,
-  validateUpstreamConfig,
 } from "./src/lib/clickhouse";
 
 export default defineConfig(({ mode }) => {
@@ -27,10 +28,13 @@ export default defineConfig(({ mode }) => {
   const chConfig = loadConfigFromEnv(env as ImportMetaEnv);
   let proxyTarget: string;
   try {
-    // validateUpstreamConfig returns the absolute upstream URL; we want
-    // the origin (no `?database=…` suffix) as the proxy target so the
-    // /ch rewrite produces /?database=… at ClickHouse.
-    const validated = new URL(validateUpstreamConfig(chConfig));
+    // assertConfigValid throws on bad host/port — keeps the loader and
+    // the dev-proxy in lockstep on what's a legal config. We separately
+    // build the URL (with query) and strip to the origin, since the
+    // proxy target must NOT include `?database=…` (the /ch rewrite
+    // produces /?database=… at ClickHouse).
+    assertConfigValid(chConfig);
+    const validated = new URL(buildEndpointUrl(chConfig));
     proxyTarget = `${validated.protocol}//${validated.host}`;
   } catch (err) {
     if (err instanceof ClickHouseError) {
@@ -57,12 +61,18 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       host: "127.0.0.1",
       // Same-origin dev proxy for ClickHouse. The browser POSTs to
-      // /ch?database=... (same-origin from its perspective), Vite forwards
-      // to http://<chHost>:<chPort>/?database=... — no CORS preflight,
-      // since the browser never sees a cross-origin request. The Tauri
-      // runtime will bypass this entirely (HTTP plugin, filed as VOI-347).
+      // /ch?... (same-origin from its perspective), Vite forwards to
+      // http://<chHost>:<chPort>/?... — no CORS preflight, since the
+      // browser never sees a cross-origin request. The Tauri runtime
+      // will bypass this entirely (HTTP plugin, filed as VOI-347).
+      //
+      // Key is a regex so the match is segment-anchored — a path of
+      // /ch, /ch/<anything>, or /ch?<query> proxies; /changelog,
+      // /cherry.png, or any other "happens to start with /ch" path
+      // falls through to Vite's normal handling. Vite's default string
+      // key is startsWith-style, which would silently route those.
       proxy: {
-        "/ch": {
+        "^/ch(?:[/?]|$)": {
           target: proxyTarget,
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/ch/, ""),

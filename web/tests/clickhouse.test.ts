@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  assertConfigValid,
   buildEndpointUrl,
   buildRequestUrl,
   ClickHouseError,
   fetchOnce,
   loadConfigFromEnv,
-  validateUpstreamConfig,
 } from "../src/lib/clickhouse";
 
 // Vitest gives each module its own `import.meta.env`, so mutating the
@@ -173,26 +173,26 @@ describe("loadConfigFromEnv", () => {
   });
 });
 
-describe("validateUpstreamConfig", () => {
-  it("returns the absolute upstream URL when the config validates", () => {
-    // Named, returns-a-value helper — refactor-safe so a future cleanup
-    // can't silently delete the only validation path on fetchOnce. Also
-    // the single source of truth vite.config.ts reuses to keep its
-    // dev-proxy target in lockstep with the loader.
+describe("assertConfigValid", () => {
+  it("returns void when the config validates (true assertion, not a build-and-discard alias)", () => {
+    // Distinct from buildEndpointUrl: callers that need ONLY the
+    // validation (fetchOnce in browser-proxy mode, vite.config.ts at
+    // boot) read structurally as "validate". The two callers MUST stay
+    // in lockstep or env typos produce silent 502s.
     expect(
-      validateUpstreamConfig({
+      assertConfigValid({
         host: "127.0.0.1",
         port: 8123,
         database: "default",
         username: "default",
         password: "",
       }),
-    ).toBe("http://127.0.0.1:8123/?database=default");
+    ).toBeUndefined();
   });
 
   it("throws ClickHouseError on a bad host (so vite.config.ts surfaces an env-typo at boot)", () => {
     expect(() =>
-      validateUpstreamConfig({
+      assertConfigValid({
         host: "evil host",
         port: 8123,
         database: "default",
@@ -204,7 +204,7 @@ describe("validateUpstreamConfig", () => {
 
   it("throws ClickHouseError on a malformed IPv6 the URL setter would silently no-op", () => {
     expect(() =>
-      validateUpstreamConfig({
+      assertConfigValid({
         host: "[::::]",
         port: 8123,
         database: "default",

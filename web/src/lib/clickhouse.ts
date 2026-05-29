@@ -66,14 +66,16 @@ export function loadConfigFromEnv(
   };
 }
 
-// Throws ClickHouseError if host/port wouldn't survive the WHATWG URL
-// parser. Named (not inlined as a side-effect call) so a future refactor
-// can't silently delete the only validation path on the browser fetch.
-// Returns the validated upstream URL — useful for Tauri (VOI-347) and for
-// the vite.config.ts dev-proxy target, which has to agree with this
-// loader on what's a legal host/port.
-export function validateUpstreamConfig(config: ClickHouseConfig): string {
-  return buildEndpointUrl(config);
+// True assertion: returns void, throws ClickHouseError on a host/port
+// the WHATWG URL parser wouldn't accept. Distinct from buildEndpointUrl
+// (which returns the URL) so callers that need ONLY the validation
+// (fetchOnce in browser-proxy mode, vite.config.ts's dev-proxy
+// boot-time check) read structurally as "validate", not as "build the
+// URL and discard it". The two callers MUST stay in lockstep — the
+// proxy target the dev-server forwards to has to use the same host/port
+// the SPA loader accepts, or env typos produce a silent 502.
+export function assertConfigValid(config: ClickHouseConfig): void {
+  buildEndpointUrl(config);
 }
 
 export function buildEndpointUrl(config: ClickHouseConfig): string {
@@ -158,7 +160,7 @@ export async function fetchOnce(
   // Validate host/port up front so a misconfigured CH_HOST surfaces a
   // ClickHouseError at the same boundary it did before the proxy switch,
   // even though the actual fetch goes to the same-origin /ch path.
-  validateUpstreamConfig(config);
+  assertConfigValid(config);
   const endpoint = buildRequestUrl(config);
   const response = await fetchImpl(endpoint, {
     method: "POST",
