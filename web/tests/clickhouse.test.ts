@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildEndpointUrl,
+  buildRequestUrl,
   ClickHouseError,
+  fetchOnce,
   loadConfigFromEnv,
 } from "../src/lib/clickhouse";
 
@@ -167,5 +169,85 @@ describe("loadConfigFromEnv", () => {
     expect(loadConfigFromEnv(envFrom({ CH_HTTP_PORT: "65536" })).port).toBe(
       8123,
     );
+  });
+});
+
+describe("buildRequestUrl", () => {
+  it("returns a same-origin path so the dev-proxy avoids a CORS preflight", () => {
+    // The browser sees /ch?database=... as same-origin (Vite serves the
+    // SPA and the proxy alike). An absolute http://127.0.0.1:8123/?...
+    // would trip a preflight that ClickHouse's default config rejects.
+    const url = buildRequestUrl({
+      host: "localhost",
+      port: 8123,
+      database: "default",
+      username: "default",
+      password: "",
+    });
+    expect(url).toBe("/ch?database=default");
+  });
+
+  it("URL-encodes database names that need escaping", () => {
+    const url = buildRequestUrl({
+      host: "localhost",
+      port: 8123,
+      database: "obs analytics+v2",
+      username: "default",
+      password: "",
+    });
+    expect(url).toBe("/ch?database=obs+analytics%2Bv2");
+  });
+});
+
+describe("fetchOnce", () => {
+  it("POSTs to the same-origin /ch path, not the absolute upstream URL", async () => {
+    // Regression: an earlier impl POSTed directly to
+    // http://127.0.0.1:8123/?database=default, which triggered a CORS
+    // preflight ClickHouse's default config refused, so no rows ever
+    // reached the SPA in browser mode. Now the request hits Vite at /ch
+    // and the proxy forwards to ClickHouse.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("[]", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [calledUrl, init] = fetchImpl.mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(calledUrl).toBe("/ch?database=default");
+    expect(init.method).toBe("POST");
+  });
+
+  it("still validates host/port at the fetch boundary", async () => {
+    // Validation lives in buildEndpointUrl and fetchOnce calls it for
+    // its side-effect — a misconfigured CH_HOST must surface a
+    // ClickHouseError BEFORE we ship a half-built request.
+    const fetchImpl = vi.fn();
+    await expect(
+      fetchOnce(
+        {
+          host: "evil host",
+          port: 8123,
+          database: "default",
+          username: "default",
+          password: "",
+        },
+        fetchImpl as unknown as typeof fetch,
+      ),
+    ).rejects.toThrow(ClickHouseError);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

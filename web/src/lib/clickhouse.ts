@@ -130,11 +130,26 @@ function authorizationHeader(config: ClickHouseConfig): string {
   return `Basic ${btoa(binary)}`;
 }
 
+// Request path used by fetchOnce in the browser. Same-origin under Vite's
+// dev-proxy (vite.config.ts maps /ch → http://<chHost>:<chPort>), so the
+// browser never sees a cross-origin request and there's no CORS preflight.
+// buildEndpointUrl is kept for its hostname/port validation and for the
+// Tauri runtime path (VOI-347), where the HTTP plugin bypasses the browser
+// origin model entirely and needs the absolute upstream URL.
+export function buildRequestUrl(config: ClickHouseConfig): string {
+  const params = new URLSearchParams({ database: config.database });
+  return `/ch?${params.toString()}`;
+}
+
 export async function fetchOnce(
   config: ClickHouseConfig = loadConfigFromEnv(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<SpanRow[]> {
-  const endpoint = buildEndpointUrl(config);
+  // Validate host/port up front so a misconfigured CH_HOST surfaces a
+  // ClickHouseError at the same boundary it did before the proxy switch,
+  // even though the actual fetch goes to the same-origin /ch path.
+  buildEndpointUrl(config);
+  const endpoint = buildRequestUrl(config);
   const response = await fetchImpl(endpoint, {
     method: "POST",
     headers: {
