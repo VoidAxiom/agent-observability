@@ -63,6 +63,13 @@ import path from 'node:path'
 const IMPL_ROLE = "implementer"
 const SCOPE_MODE = "blocklist"  // 'allowlist' or 'blocklist'
 
+// Operator-ratified doctrine override (2026-05-29): the ui-implementer
+// subagent writes web/ UI code directly (the operator judged Claude models
+// stronger than codex on web design). Path scope locked to `web/**` only;
+// everything else still flows through the generic implementer (codex exec).
+const UI_IMPL_ROLE = "ui-implementer"
+const UI_IMPL_PREFIXES = ['web']
+
 // Allowlist-mode config: comma- or whitespace-separated dir-prefix globs from
 // template.answers. Each entry ends in `/**` by convention; strip the suffix
 // to get the active-write-root-relative prefix for path-matching. Explicit
@@ -176,10 +183,12 @@ function realpathOfPathOrParent(p) {
 function canonicalAgentType(raw) {
   if (!raw) return ''
   if (raw === IMPL_ROLE) return IMPL_ROLE
+  if (raw === UI_IMPL_ROLE) return UI_IMPL_ROLE
   // Normalize dynamic instance names (e.g. "<impl-role>-<task-slug>") to the
   // canonical role name. The prefix is controlled by the parent's spawn
   // convention; no other role uses it.
   if (raw.startsWith(IMPL_ROLE + '-')) return IMPL_ROLE
+  if (raw.startsWith(UI_IMPL_ROLE + '-')) return UI_IMPL_ROLE
   return raw
 }
 
@@ -319,7 +328,7 @@ process.stdin.on('end', () => {
     const agentId = isSub ? String(j.agent_id || '') : ''
     const agentTypeRaw = isSub ? String(j.agent_type || '') : ''
     const agentType = canonicalAgentType(agentTypeRaw)
-    const isImplAgent = isSub && agentType === IMPL_ROLE
+    const isImplAgent = isSub && (agentType === IMPL_ROLE || agentType === UI_IMPL_ROLE)
     const who = isSub ? `subagent "${agentId || agentTypeRaw || '?'}"` : 'Claude'
 
     const rootSelection = resolveWriteRoot(j, isSub, isImplAgent)
@@ -434,6 +443,26 @@ process.stdin.on('end', () => {
     }
 
     // Subagent — per-agent_type scope.
+    if (agentType === UI_IMPL_ROLE) {
+      // ui-implementer: web/** only (plus tier-1 scripts/tests already
+      // allowed above). Operator-ratified override: this role writes UI
+      // code directly via Edit/Write/MultiEdit; codex exec remains the
+      // writer for non-UI production code.
+      let ok = false
+      for (const pfx of UI_IMPL_PREFIXES) {
+        if (startsWithDir(pfx)) { ok = true; break }
+      }
+      if (ok) return allow()
+      return deny(
+        who,
+        `scripts/**, **/*.test.*, or web/** (under the active write root). ` +
+          `ui-implementer is scoped to the web/ subtree only — non-web ` +
+          `changes go through the generic implementer (codex exec) or ` +
+          `Claude-direct authoring`,
+        rawFp,
+        resolved,
+      )
+    }
     if (agentType === IMPL_ROLE) {
       if (SCOPE_MODE === 'blocklist') {
         // Blocklist mode: impl can write anywhere in the active write root

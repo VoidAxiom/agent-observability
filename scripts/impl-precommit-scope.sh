@@ -59,6 +59,7 @@ MODE="cached"
 BASE_REF=""
 SCOPE_FILE=""
 WORKTREE_ARG=""
+AGENT_TYPE_ARG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -112,6 +113,22 @@ while [[ $# -gt 0 ]]; do
       SCOPE_FILE="${1#--scope-file=}"
       if [[ -z "$SCOPE_FILE" ]]; then
         echo "✗ impl-precommit-scope: --scope-file= requires a non-empty path" >&2
+        exit 1
+      fi
+      shift 1
+      ;;
+    --agent-type)
+      if [[ $# -lt 2 || -z "${2:-}" ]]; then
+        echo "✗ impl-precommit-scope: --agent-type requires a role argument" >&2
+        exit 1
+      fi
+      AGENT_TYPE_ARG="$2"
+      shift 2
+      ;;
+    --agent-type=*)
+      AGENT_TYPE_ARG="${1#--agent-type=}"
+      if [[ -z "$AGENT_TYPE_ARG" ]]; then
+        echo "✗ impl-precommit-scope: --agent-type= requires a non-empty role" >&2
         exit 1
       fi
       shift 1
@@ -233,11 +250,24 @@ in_packet_scope() {
   return 1
 }
 
-# AGENT_TYPE selects which scope allowlist the hook applies. DELIBERATELY
-# hard-coded — using any worker-writable value (a file at the worktree root,
-# an env var the worker controls) to select the authorization scope is the
-# exact identity-forgery hole the rail exists to prevent.
-AGENT_TYPE="implementer"
+# AGENT_TYPE selects which scope allowlist the hook applies. Sourced ONLY
+# from the --agent-type CLI flag (Claude/operator-controlled), defaulting to
+# "implementer". Worker-writable sources (files at the worktree root, env
+# vars the worker controls) are DELIBERATELY NOT accepted — that would be
+# the identity-forgery hole the rail exists to prevent.
+#
+# Whitelist of known roles (operator-ratified 2026-05-29):
+#   implementer    — codex-exec writer for non-UI production code (default)
+#   ui-implementer — Opus 4.7 direct-write for web/ UI code only
+AGENT_TYPE="${AGENT_TYPE_ARG:-implementer}"
+case "$AGENT_TYPE" in
+  implementer|ui-implementer) ;;
+  *)
+    echo "✗ impl-precommit-scope: --agent-type '$AGENT_TYPE' is not a known role" >&2
+    echo "  known roles: implementer, ui-implementer" >&2
+    exit 1
+    ;;
+esac
 
 # Resolve main repo root from the worktree. Worktrees provisioned by
 # worktree-new.sh sit at <repo-parent>/.zawarudo-worktrees/<name>/

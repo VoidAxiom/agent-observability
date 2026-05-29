@@ -185,11 +185,32 @@ Per packet, Claude spawns an `implementer` subagent (Task tool,
 `subagent_type: implementer`) that runs in its own filesystem worktree. The
 implementer's tools list omits `Edit`/`Write`/`MultiEdit`; it dispatches
 `codex exec` workers via `scripts/codex-run.sh worker <run-id> <task-file>`
-to produce code changes. **Codex is the only writer of production code.** The
-implementer also runs local gates, drives the `/code-review` loop until
-clean, commits within the packet allowlist, pushes, opens the PR, and drives
-the `@codex review` eye-emoji loop including thread resolution. See
-`.claude/agents/implementer.md` for the full Impl Contract.
+to produce code changes. **Codex is the only writer of production code outside
+`web/`.** The implementer also runs local gates, drives the `/code-review`
+loop until clean, commits within the packet allowlist, pushes, opens the PR,
+and drives the `@codex review` eye-emoji loop including thread resolution.
+See `.claude/agents/implementer.md` for the full Impl Contract.
+
+### Operator-ratified doctrine override: `ui-implementer` for `web/`
+
+**2026-05-29:** The operator judged Claude models stronger than codex on web
+design and ratified an override: for the `web/` subtree only, dispatch a
+**`ui-implementer`** subagent (Task tool, `subagent_type: ui-implementer`,
+Opus 4.7) that writes UI code DIRECTLY via `Edit`/`Write`/`MultiEdit`. No
+codex underneath. Its path scope is locked to `web/**` by both
+`hooks/write-scope-guard.mjs` and
+`scripts/impl-precommit-scope.sh --agent-type ui-implementer`. Everything
+outside `web/` still flows through the generic implementer + codex exec —
+the override is web-only, not a general doctrine change.
+
+When dispatching a web packet, Claude uses `subagent_type: ui-implementer`
+and provisions a worktree the same way as for generic packets. The
+ui-implementer's contract (see `.claude/agents/ui-implementer.md`) mirrors
+the generic Impl Contract for gates / reviews / commits / PRs — only the
+"who writes" step differs (it writes directly instead of dispatching codex).
+The audit-trail expectation (every source change traces to a `.codex-runs/`
+git_diff.patch) does NOT apply to ui-implementer; its commits ARE the audit
+trail.
 
 Claude's serial time is:
 1. Authoring the spec for each packet (including the per-packet allowlist).
@@ -567,9 +588,11 @@ writes:
   — outside the project root by design)
 
 Anything else (production code, config, infra, fixtures — anything
-outside the allowlist above) is denied. To change production code,
-dispatch the implementer subagent. The hook explains in its deny
-message which subagent_type to spawn.
+outside the allowlist above) is denied. To change production code:
+- For `web/**` UI code → dispatch `ui-implementer` (writes directly).
+- For everything else → dispatch `implementer` (dispatches codex exec).
+
+The hook explains in its deny message which subagent_type to spawn.
 
 The `architecture/**` and `.understand-anything/**` prefixes are also
 Claude-exclusive in the impl's blocklist mode — the impl cannot write
