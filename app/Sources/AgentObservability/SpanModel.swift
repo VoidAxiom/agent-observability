@@ -6,6 +6,9 @@ struct SpanRowModel: Codable, Identifiable {
     let SpanName: String
     let Timestamp: String
     let ServiceName: String
+    let AgentProject: String
+    let AgentSessionId: String
+    let AgentRunId: String
     var id: String { TraceId + SpanId }
 }
 
