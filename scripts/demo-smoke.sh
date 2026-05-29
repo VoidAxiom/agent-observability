@@ -44,7 +44,17 @@ fi
 pushd sdk >/dev/null
 [ -d .venv ] || uv venv --python 3.11 .venv
 uv pip install -e . --quiet
-uv run python examples/smoke.py
+# Keep this demo reproducible on fresh dev boxes regardless of ambient
+# OTEL config from tools such as Langfuse, Grafana, or Claude Code telemetry.
+# The SDK honoring standard OTEL env is correct library behavior, so pin
+# the endpoint in this wrapper rather than in the library. Bare host:port is
+# gRPC; the SDK derives insecure from the absence of https://.
+# Clear conflicting ambient PROTOCOL/HEADERS/TRACES_ENDPOINT vars so this pin wins.
+env -u OTEL_EXPORTER_OTLP_PROTOCOL \
+    -u OTEL_EXPORTER_OTLP_HEADERS \
+    -u OTEL_EXPORTER_OTLP_TRACES_ENDPOINT \
+    OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 \
+    uv run python examples/smoke.py
 popd >/dev/null
 
 sleep 3
