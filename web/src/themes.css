@@ -1,0 +1,576 @@
+/*
+ * themes.css — 21 style × palette combinations.
+ *
+ * Architecture: <html data-style="STYLE" data-palette="PALETTE"> drives the
+ * cartesian-product selectors below. Each block sets the full token contract
+ * from docs/web-ui-theme-system.md §5. Components consume ONLY these tokens
+ * and never style-specific class names.
+ *
+ * Per-style invariants (docs §4) — Brutalist sets --motion-snap: 0s,
+ * Terminal forces --radius-card: 0, Editorial / Holo-Opal / Glass-Arctic
+ * declare color-scheme: light.
+ */
+
+/* ============================================================
+ * SHARED KEYFRAMES (referenced via --motion-running / --motion-flowing)
+ * ============================================================ */
+
+@keyframes neon-pulse {
+  0%, 100% {
+    opacity: 0.85;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 1;
+    filter: brightness(1.2);
+  }
+}
+
+@keyframes neon-flow {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+@keyframes glass-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+
+@keyframes glass-flow {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+@keyframes terminal-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0.3; }
+}
+
+@keyframes terminal-reveal {
+  0% { opacity: 0.3; }
+  100% { opacity: 1; }
+}
+
+@keyframes editorial-tick {
+  0% { width: 0%; }
+  100% { width: 100%; }
+}
+
+@keyframes liquid-flow {
+  0% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes liquid-stream {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 0% 200%; }
+}
+
+@keyframes holo-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes holo-rotate {
+  0% { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(360deg); }
+}
+
+/* ============================================================
+ * NEON SYNTHWAVE
+ * --motion-running: neon-pulse; --motion-flowing: neon-flow;
+ * Typography: Orbitron / JetBrains Mono. Loud glows.
+ * ============================================================ */
+
+[data-style="neon"] {
+  --font-numeric: "Orbitron", "JetBrains Mono", ui-monospace, monospace;
+  --font-body: "JetBrains Mono", ui-monospace, monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius-card: 6px;
+  --radius-sm: 3px;
+  --border-width-card: 1px;
+  --motion-running: neon-pulse 1.2s ease-in-out infinite;
+  --motion-flowing: neon-flow 3s linear infinite;
+  --motion-appear: opacity 220ms ease-out, transform 220ms ease-out;
+  --motion-snap: 180ms ease-out;
+  --text-shadow-glow: 0 0 6px currentColor;
+}
+
+[data-style="neon"][data-palette="neon-tokyo"] {
+  --bg: #080013;
+  --surface: rgba(20, 0, 40, 0.6);
+  --surface-raised: rgba(30, 10, 55, 0.75);
+  --border-base: rgba(42, 20, 80, 0.8);
+  --border-active: rgba(255, 43, 214, 0.6);
+  --text: #e1d4ff;
+  --text-muted: #8a7fb0;
+  --text-on-accent: #080013;
+  --accent-1: #ff2bd6;
+  --accent-2: #b94aff;
+  --accent-3: #00ffe5;
+  --glow-accent-1: 0 0 16px rgba(255, 43, 214, 0.55);
+  --glow-accent-2: 0 0 14px rgba(185, 74, 255, 0.5);
+  --glow-accent-3: 0 0 18px rgba(0, 255, 229, 0.5);
+}
+
+[data-style="neon"][data-palette="neon-miami"] {
+  --bg: #1a0028;
+  --surface: rgba(40, 10, 55, 0.6);
+  --surface-raised: rgba(55, 18, 70, 0.75);
+  --border-base: rgba(80, 30, 90, 0.8);
+  --border-active: rgba(255, 107, 157, 0.7);
+  --text: #ffe1ee;
+  --text-muted: #c89aae;
+  --text-on-accent: #1a0028;
+  --accent-1: #ff6b9d;
+  --accent-2: #ff8c42;
+  --accent-3: #ffc857;
+  --glow-accent-1: 0 0 16px rgba(255, 107, 157, 0.55);
+  --glow-accent-2: 0 0 14px rgba(255, 140, 66, 0.5);
+  --glow-accent-3: 0 0 18px rgba(255, 200, 87, 0.45);
+}
+
+[data-style="neon"][data-palette="neon-vapor"] {
+  --bg: #1a1530;
+  --surface: rgba(40, 30, 70, 0.55);
+  --surface-raised: rgba(55, 42, 85, 0.7);
+  --border-base: rgba(80, 65, 120, 0.8);
+  --border-active: rgba(200, 182, 255, 0.7);
+  --text: #ece4ff;
+  --text-muted: #a89ed0;
+  --text-on-accent: #1a1530;
+  --accent-1: #c8b6ff;
+  --accent-2: #ffb6e1;
+  --accent-3: #b6ffd9;
+  --glow-accent-1: 0 0 16px rgba(200, 182, 255, 0.5);
+  --glow-accent-2: 0 0 14px rgba(255, 182, 225, 0.5);
+  --glow-accent-3: 0 0 18px rgba(182, 255, 217, 0.45);
+}
+
+/* ============================================================
+ * GLASS / AURORA
+ * Soft pastels, backdrop-blur surfaces.
+ * ============================================================ */
+
+[data-style="glass"] {
+  --font-numeric: -apple-system, "SF Pro Display", "Inter", system-ui, sans-serif;
+  --font-body: -apple-system, "SF Pro Display", "Inter", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+  --radius-card: 14px;
+  --radius-sm: 8px;
+  --border-width-card: 1px;
+  --motion-running: glass-breathe 2.4s ease-in-out infinite;
+  --motion-flowing: glass-flow 3.5s ease-in-out infinite;
+  --motion-appear: opacity 320ms ease, transform 320ms ease;
+  --motion-snap: 260ms ease;
+  --text-shadow-glow: none;
+}
+
+[data-style="glass"][data-palette="glass-aurora"] {
+  --bg: linear-gradient(135deg, #1a1f3a, #2d1f4a, #1a3a4a);
+  --surface: rgba(255, 255, 255, 0.08);
+  --surface-raised: rgba(255, 255, 255, 0.14);
+  --border-base: rgba(255, 255, 255, 0.15);
+  --border-active: rgba(255, 184, 216, 0.6);
+  --text: #f0eaff;
+  --text-muted: #b8a8d8;
+  --text-on-accent: #1a1f3a;
+  --accent-1: #ffb8d8;
+  --accent-2: #d8b8ff;
+  --accent-3: #b8ffd8;
+  --glow-accent-1: 0 4px 24px rgba(255, 184, 216, 0.4);
+  --glow-accent-2: 0 4px 24px rgba(216, 184, 255, 0.4);
+  --glow-accent-3: 0 4px 24px rgba(184, 255, 216, 0.4);
+}
+
+[data-style="glass"][data-palette="glass-arctic"] {
+  color-scheme: light;
+  --bg: linear-gradient(135deg, #2a3a4a, #3a4a5a, #4a5a6a);
+  --surface: rgba(255, 255, 255, 0.12);
+  --surface-raised: rgba(255, 255, 255, 0.18);
+  --border-base: rgba(255, 255, 255, 0.18);
+  --border-active: rgba(180, 220, 255, 0.7);
+  --text: #f0f5ff;
+  --text-muted: #c8d2e1;
+  --text-on-accent: #2a3a4a;
+  --accent-1: #b4dcff;
+  --accent-2: #dcebfa;
+  --accent-3: #c8d2e1;
+  --glow-accent-1: 0 4px 24px rgba(180, 220, 255, 0.45);
+  --glow-accent-2: 0 4px 24px rgba(220, 235, 250, 0.4);
+  --glow-accent-3: 0 4px 24px rgba(200, 210, 225, 0.4);
+}
+
+[data-style="glass"][data-palette="glass-sunset"] {
+  --bg: linear-gradient(135deg, #3a1f1a, #4a2a1f, #3a1f2a);
+  --surface: rgba(255, 200, 160, 0.1);
+  --surface-raised: rgba(255, 200, 160, 0.16);
+  --border-base: rgba(255, 180, 140, 0.2);
+  --border-active: rgba(255, 180, 140, 0.7);
+  --text: #fff0e8;
+  --text-muted: #d8b8a0;
+  --text-on-accent: #3a1f1a;
+  --accent-1: #ffb48c;
+  --accent-2: #ff8c78;
+  --accent-3: #ffc878;
+  --glow-accent-1: 0 4px 24px rgba(255, 180, 140, 0.4);
+  --glow-accent-2: 0 4px 24px rgba(255, 140, 120, 0.4);
+  --glow-accent-3: 0 4px 24px rgba(255, 200, 120, 0.4);
+}
+
+/* ============================================================
+ * TERMINAL / CLI
+ * Mono everywhere, no radius, accent-color borders.
+ * ============================================================ */
+
+[data-style="terminal"] {
+  --font-numeric: "JetBrains Mono", ui-monospace, monospace;
+  --font-body: "JetBrains Mono", ui-monospace, monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius-card: 0;
+  --radius-sm: 0;
+  --border-width-card: 1px;
+  --motion-running: terminal-blink 1s steps(2) infinite;
+  --motion-flowing: terminal-reveal 600ms steps(8) forwards;
+  --motion-appear: opacity 160ms steps(3);
+  --motion-snap: 80ms steps(2);
+  --text-shadow-glow: 0 0 4px currentColor;
+}
+
+[data-style="terminal"][data-palette="terminal-matrix"] {
+  --bg: #0a0e0a;
+  --surface: #0e120e;
+  --surface-raised: #122012;
+  --border-base: #1f4a1f;
+  --border-active: #00ff66;
+  --text: #b4ffb4;
+  --text-muted: #5a9a5a;
+  --text-on-accent: #0a0e0a;
+  --accent-1: #00ff66;
+  --accent-2: #ffcc00;
+  --accent-3: #00ff66;
+  --glow-accent-1: 0 0 8px rgba(0, 255, 102, 0.6);
+  --glow-accent-2: 0 0 8px rgba(255, 204, 0, 0.55);
+  --glow-accent-3: 0 0 8px rgba(0, 255, 102, 0.6);
+}
+
+[data-style="terminal"][data-palette="terminal-amber"] {
+  --bg: #1a0d00;
+  --surface: #200f00;
+  --surface-raised: #2a1500;
+  --border-base: #5a3a00;
+  --border-active: #ffaa00;
+  --text: #ffd098;
+  --text-muted: #a06e30;
+  --text-on-accent: #1a0d00;
+  --accent-1: #ffaa00;
+  --accent-2: #ffffff;
+  --accent-3: #ffaa00;
+  --glow-accent-1: 0 0 8px rgba(255, 170, 0, 0.6);
+  --glow-accent-2: 0 0 6px rgba(255, 255, 255, 0.5);
+  --glow-accent-3: 0 0 8px rgba(255, 170, 0, 0.6);
+}
+
+[data-style="terminal"][data-palette="terminal-solarized"] {
+  --bg: #002b36;
+  --surface: #073642;
+  --surface-raised: #0d4250;
+  --border-base: #1c5260;
+  --border-active: #268bd2;
+  --text: #93a1a1;
+  --text-muted: #586e75;
+  --text-on-accent: #002b36;
+  --accent-1: #268bd2;
+  --accent-2: #b58900;
+  --accent-3: #6c71c4;
+  --glow-accent-1: 0 0 8px rgba(38, 139, 210, 0.55);
+  --glow-accent-2: 0 0 8px rgba(181, 137, 0, 0.55);
+  --glow-accent-3: 0 0 8px rgba(108, 113, 196, 0.55);
+}
+
+/* ============================================================
+ * EDITORIAL / TYPOGRAPHIC
+ * No shadows, no glows. Hairlines. Light or near-black.
+ * ============================================================ */
+
+[data-style="editorial"] {
+  --font-numeric: "Playfair Display", "Georgia", "Times New Roman", serif;
+  --font-body: "Inter", -apple-system, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+  --radius-card: 0;
+  --radius-sm: 0;
+  --border-width-card: 1px;
+  --motion-running: editorial-tick 1.6s linear infinite;
+  --motion-flowing: editorial-tick 800ms linear forwards;
+  --motion-appear: opacity 280ms ease;
+  --motion-snap: 220ms ease;
+  --text-shadow-glow: none;
+}
+
+[data-style="editorial"][data-palette="editorial-print"] {
+  color-scheme: light;
+  --bg: #fafaf7;
+  --surface: #ffffff;
+  --surface-raised: #f4f3ee;
+  --border-base: #1a1a1a;
+  --border-active: #1a1a1a;
+  --text: #1a1a1a;
+  --text-muted: #6a6a6a;
+  --text-on-accent: #fafaf7;
+  --accent-1: #1a1a1a;
+  --accent-2: #1a1a1a;
+  --accent-3: #1a1a1a;
+  --glow-accent-1: none;
+  --glow-accent-2: none;
+  --glow-accent-3: none;
+}
+
+[data-style="editorial"][data-palette="editorial-inverted"] {
+  --bg: #0a0a0a;
+  --surface: #111111;
+  --surface-raised: #181818;
+  --border-base: #f5f0e8;
+  --border-active: #f5f0e8;
+  --text: #f5f0e8;
+  --text-muted: #9a9388;
+  --text-on-accent: #0a0a0a;
+  --accent-1: #f5f0e8;
+  --accent-2: #f5f0e8;
+  --accent-3: #f5f0e8;
+  --glow-accent-1: none;
+  --glow-accent-2: none;
+  --glow-accent-3: none;
+}
+
+[data-style="editorial"][data-palette="editorial-bloomberg"] {
+  --bg: #0a1530;
+  --surface: #0e1a3a;
+  --surface-raised: #14224a;
+  --border-base: #ff8800;
+  --border-active: #ff8800;
+  --text: #ffe8c8;
+  --text-muted: #9a8a6a;
+  --text-on-accent: #0a1530;
+  --accent-1: #ff8800;
+  --accent-2: #ff8800;
+  --accent-3: #ff8800;
+  --glow-accent-1: none;
+  --glow-accent-2: none;
+  --glow-accent-3: none;
+}
+
+/* ============================================================
+ * BRUTALIST
+ * Flat blocks, thick borders, NO motion (--motion-snap: 0s).
+ * ============================================================ */
+
+[data-style="brut"] {
+  --font-numeric: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --font-body: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius-card: 0;
+  --radius-sm: 0;
+  --border-width-card: 3px;
+  --motion-running: none;
+  --motion-flowing: none;
+  --motion-appear: none;
+  --motion-snap: 0s;
+  --text-shadow-glow: none;
+}
+
+[data-style="brut"][data-palette="brut-caution"] {
+  color-scheme: light;
+  --bg: #fff200;
+  --surface: #fff200;
+  --surface-raised: #ffffff;
+  --border-base: #000000;
+  --border-active: #000000;
+  --text: #000000;
+  --text-muted: #2a2a2a;
+  --text-on-accent: #fff200;
+  --accent-1: #000000;
+  --accent-2: #000000;
+  --accent-3: #000000;
+  --glow-accent-1: none;
+  --glow-accent-2: none;
+  --glow-accent-3: none;
+}
+
+[data-style="brut"][data-palette="brut-construct"] {
+  color-scheme: light;
+  --bg: #fff8e7;
+  --surface: #ffffff;
+  --surface-raised: #fff0d0;
+  --border-base: #1a1a1a;
+  --border-active: #d83a3a;
+  --text: #1a1a1a;
+  --text-muted: #5a5a5a;
+  --text-on-accent: #fff8e7;
+  --accent-1: #d83a3a;
+  --accent-2: #1f4ec2;
+  --accent-3: #1a1a1a;
+  --glow-accent-1: none;
+  --glow-accent-2: none;
+  --glow-accent-3: none;
+}
+
+[data-style="brut"][data-palette="brut-electric"] {
+  --bg: #0033ff;
+  --surface: #0033ff;
+  --surface-raised: #0040ff;
+  --border-base: #000000;
+  --border-active: #fcff00;
+  --text: #fcff00;
+  --text-muted: #c8ca00;
+  --text-on-accent: #0033ff;
+  --accent-1: #fcff00;
+  --accent-2: #000000;
+  --accent-3: #fcff00;
+  --glow-accent-1: none;
+  --glow-accent-2: none;
+  --glow-accent-3: none;
+}
+
+/* ============================================================
+ * LIQUID / ORGANIC
+ * Radial-gradient backgrounds, generous radius.
+ * ============================================================ */
+
+[data-style="liquid"] {
+  --font-numeric: "Inter", -apple-system, "SF Pro Display", system-ui, sans-serif;
+  --font-body: "Inter", -apple-system, "SF Pro Display", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+  --radius-card: 22px;
+  --radius-sm: 12px;
+  --border-width-card: 1px;
+  --motion-running: liquid-flow 2.2s ease-in-out infinite;
+  --motion-flowing: liquid-stream 4s linear infinite;
+  --motion-appear: opacity 300ms ease, transform 300ms ease;
+  --motion-snap: 240ms ease;
+  --text-shadow-glow: none;
+}
+
+[data-style="liquid"][data-palette="liquid-ocean"] {
+  --bg: radial-gradient(ellipse at top, #003a4a, #001a2a 70%);
+  --surface: rgba(0, 80, 110, 0.4);
+  --surface-raised: rgba(0, 100, 130, 0.55);
+  --border-base: rgba(127, 223, 255, 0.2);
+  --border-active: rgba(127, 223, 255, 0.7);
+  --text: #e0f5ff;
+  --text-muted: #8ab8c8;
+  --text-on-accent: #001a2a;
+  --accent-1: #7fdfff;
+  --accent-2: #5fc0a8;
+  --accent-3: #4fffc0;
+  --glow-accent-1: 0 6px 22px rgba(127, 223, 255, 0.4);
+  --glow-accent-2: 0 6px 22px rgba(95, 192, 168, 0.4);
+  --glow-accent-3: 0 6px 22px rgba(79, 255, 192, 0.4);
+}
+
+[data-style="liquid"][data-palette="liquid-lava"] {
+  --bg: radial-gradient(ellipse at top, #4a1a00, #2a0a00 70%);
+  --surface: rgba(110, 40, 0, 0.4);
+  --surface-raised: rgba(130, 50, 0, 0.55);
+  --border-base: rgba(255, 80, 80, 0.2);
+  --border-active: rgba(255, 80, 80, 0.7);
+  --text: #ffe0d0;
+  --text-muted: #c89878;
+  --text-on-accent: #2a0a00;
+  --accent-1: #ff5050;
+  --accent-2: #ffa030;
+  --accent-3: #ff3aa0;
+  --glow-accent-1: 0 6px 22px rgba(255, 80, 80, 0.4);
+  --glow-accent-2: 0 6px 22px rgba(255, 160, 48, 0.4);
+  --glow-accent-3: 0 6px 22px rgba(255, 58, 160, 0.4);
+}
+
+[data-style="liquid"][data-palette="liquid-forest"] {
+  --bg: radial-gradient(ellipse at top, #1a3a20, #0a1f10 70%);
+  --surface: rgba(40, 80, 50, 0.4);
+  --surface-raised: rgba(50, 95, 60, 0.55);
+  --border-base: rgba(168, 208, 144, 0.2);
+  --border-active: rgba(168, 208, 144, 0.7);
+  --text: #e0f0d8;
+  --text-muted: #98a888;
+  --text-on-accent: #0a1f10;
+  --accent-1: #a8d090;
+  --accent-2: #c0b070;
+  --accent-3: #d4a850;
+  --glow-accent-1: 0 6px 22px rgba(168, 208, 144, 0.4);
+  --glow-accent-2: 0 6px 22px rgba(192, 176, 112, 0.4);
+  --glow-accent-3: 0 6px 22px rgba(212, 168, 80, 0.4);
+}
+
+/* ============================================================
+ * HOLOGRAPHIC / IRIDESCENT
+ * Animated gradients, hue-rotate (≥3s to stay non-epileptic).
+ * ============================================================ */
+
+[data-style="holo"] {
+  --font-numeric: "Inter", -apple-system, system-ui, sans-serif;
+  --font-body: "Inter", -apple-system, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+  --radius-card: 12px;
+  --radius-sm: 6px;
+  --border-width-card: 1px;
+  --motion-running: holo-shift 4s ease-in-out infinite;
+  --motion-flowing: holo-rotate 6s linear infinite;
+  --motion-appear: opacity 320ms ease, transform 320ms ease;
+  --motion-snap: 260ms ease;
+  --text-shadow-glow: none;
+}
+
+[data-style="holo"][data-palette="holo-prism"] {
+  --bg: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);
+  --surface: rgba(20, 30, 60, 0.55);
+  --surface-raised: rgba(30, 45, 80, 0.7);
+  --border-base: rgba(0, 245, 255, 0.25);
+  --border-active: rgba(255, 0, 255, 0.7);
+  --text: #f0f0ff;
+  --text-muted: #a8a8c8;
+  --text-on-accent: #0f1530;
+  --accent-1: #00f5ff;
+  --accent-2: #ff00ff;
+  --accent-3: #ffea00;
+  --glow-accent-1: 0 0 18px rgba(0, 245, 255, 0.45);
+  --glow-accent-2: 0 0 18px rgba(255, 0, 255, 0.45);
+  --glow-accent-3: 0 0 18px rgba(255, 234, 0, 0.4);
+}
+
+[data-style="holo"][data-palette="holo-opal"] {
+  color-scheme: light;
+  --bg: linear-gradient(135deg, #f0e8ff, #ffe8f5, #e8fff5);
+  --surface: rgba(255, 255, 255, 0.55);
+  --surface-raised: rgba(255, 255, 255, 0.75);
+  --border-base: rgba(157, 127, 208, 0.25);
+  --border-active: rgba(157, 127, 208, 0.7);
+  --text: #2a1f3a;
+  --text-muted: #6a5e80;
+  --text-on-accent: #ffffff;
+  --accent-1: #9d7fd0;
+  --accent-2: #d09da0;
+  --accent-3: #7fd0a0;
+  --glow-accent-1: 0 6px 18px rgba(157, 127, 208, 0.35);
+  --glow-accent-2: 0 6px 18px rgba(208, 157, 160, 0.35);
+  --glow-accent-3: 0 6px 18px rgba(127, 208, 160, 0.35);
+}
+
+[data-style="holo"][data-palette="holo-oilslick"] {
+  --bg: linear-gradient(135deg, #0a0014, #14002a, #1a0033);
+  --surface: rgba(30, 0, 50, 0.6);
+  --surface-raised: rgba(45, 5, 70, 0.75);
+  --border-base: rgba(157, 127, 255, 0.3);
+  --border-active: rgba(255, 127, 218, 0.7);
+  --text: #f0e8ff;
+  --text-muted: #a89ec8;
+  --text-on-accent: #0a0014;
+  --accent-1: #9d7fff;
+  --accent-2: #ff7fda;
+  --accent-3: #7fffda;
+  --glow-accent-1: 0 0 18px rgba(157, 127, 255, 0.45);
+  --glow-accent-2: 0 0 18px rgba(255, 127, 218, 0.45);
+  --glow-accent-3: 0 0 18px rgba(127, 255, 218, 0.4);
+}
