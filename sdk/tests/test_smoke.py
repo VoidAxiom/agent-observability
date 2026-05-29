@@ -13,6 +13,7 @@ import sys
 import uuid
 from pathlib import Path
 
+import opentelemetry.context as otel_context
 import opentelemetry.trace as trace_api
 import pytest
 from opentelemetry.sdk.resources import Resource
@@ -35,6 +36,21 @@ def _reset_global_tracer_provider() -> None:
     """Reset OTel's set-once global tracer provider for test isolation."""
     trace_api._TRACER_PROVIDER = None
     trace_api._TRACER_PROVIDER_SET_ONCE = Once()
+
+
+@pytest.fixture
+def isolated_otel_context():
+    """Push a fresh empty OTel context; auto-detach at test exit.
+
+    Necessary because bootstrap()'s `context.attach()` (added in VOI-339)
+    doesn't capture a detach token by design — the SDK assumes per-process
+    lifetime. Within a pytest process multiple tests share contextvars
+    storage, so without this fixture an earlier test's attached context
+    leaks into later tests' spans.
+    """
+    token = otel_context.attach(otel_context.Context())
+    yield
+    otel_context.detach(token)
 
 
 def test_smoke_exits_zero() -> None:
@@ -173,3 +189,71 @@ def test_validation_rejects_empty_inputs() -> None:
     finally:
         bootstrap_module._PROVIDER = None
         _reset_global_tracer_provider()
+
+
+def test_bootstrap_inherits_valid_env_traceparent(monkeypatch, isolated_otel_context):
+    """A valid inbound TRACEPARENT becomes the parent context for spans."""
+    monkeypatch.setattr(bootstrap_module, "_PROVIDER", None)
+    _reset_global_tracer_provider()
+    inbound = "00-11111111111111111111111111111111-1111111111111111-01"
+    monkeypatch.setenv("TRACEPARENT", inbound)
+    bootstrap(project="test-inherit")
+    tracer = trace_api.get_tracer("test")
+    with tracer.start_as_current_span("child") as span:
+        ctx = span.get_span_context()
+        assert format(ctx.trace_id, "032x") == "11111111111111111111111111111111"
+
+
+def test_bootstrap_fresh_when_env_unset(monkeypatch, isolated_otel_context):
+    """No inbound TRACEPARENT → fresh root trace (existing behavior unchanged)."""
+    monkeypatch.setattr(bootstrap_module, "_PROVIDER", None)
+    _reset_global_tracer_provider()
+    monkeypatch.delenv("TRACEPARENT", raising=False)
+    bootstrap(project="test-fresh")
+    tracer = trace_api.get_tracer("test")
+    with tracer.start_as_current_span("root") as span:
+        ctx = span.get_span_context()
+        assert ctx.is_valid
+
+
+def test_bootstrap_fresh_when_env_invalid_shape(monkeypatch, isolated_otel_context):
+    """An invalid-shape TRACEPARENT → fresh root (we don't inherit garbage)."""
+    monkeypatch.setattr(bootstrap_module, "_PROVIDER", None)
+    _reset_global_tracer_provider()
+    monkeypatch.setenv("TRACEPARENT", "garbage-not-a-traceparent")
+    bootstrap(project="test-invalid")
+    tracer = trace_api.get_tracer("test")
+    with tracer.start_as_current_span("root") as span:
+        ctx = span.get_span_context()
+        assert ctx.is_valid
+
+
+def test_bootstrap_fresh_when_all_zero_trace_id(monkeypatch, isolated_otel_context):
+    """All-zero trace-id is invalid per W3C §3.2.2.3 → fresh root (not inherited)."""
+    monkeypatch.setattr(bootstrap_module, "_PROVIDER", None)
+    _reset_global_tracer_provider()
+    monkeypatch.setenv(
+        "TRACEPARENT", "00-00000000000000000000000000000000-3333333333333333-01"
+    )
+    bootstrap(project="test-zero-trace")
+    tracer = trace_api.get_tracer("test")
+    with tracer.start_as_current_span("root") as span:
+        ctx = span.get_span_context()
+        assert format(ctx.trace_id, "032x") != "00000000000000000000000000000000"
+        assert ctx.is_valid
+
+
+def test_bootstrap_fresh_when_all_zero_span_id(monkeypatch, isolated_otel_context):
+    """All-zero span-id is invalid per W3C §3.2.2.3 → fresh root (not inherited)."""
+    monkeypatch.setattr(bootstrap_module, "_PROVIDER", None)
+    _reset_global_tracer_provider()
+    monkeypatch.setenv(
+        "TRACEPARENT", "00-44444444444444444444444444444444-0000000000000000-01"
+    )
+    bootstrap(project="test-zero-span")
+    tracer = trace_api.get_tracer("test")
+    with tracer.start_as_current_span("root") as span:
+        ctx = span.get_span_context()
+        # Did not inherit the all-zero traceparent; got a fresh trace-id
+        assert format(ctx.trace_id, "032x") != "44444444444444444444444444444444"
+        assert ctx.is_valid
