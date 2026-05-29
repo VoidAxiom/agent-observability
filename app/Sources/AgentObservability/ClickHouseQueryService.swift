@@ -1,7 +1,17 @@
 import Foundation
 
 actor ClickHouseQueryService {
-    private static let query = "SELECT TraceId, SpanId, SpanName, Timestamp, ServiceName FROM otel_traces ORDER BY Timestamp DESC LIMIT 50 FORMAT JSONEachRow"
+    private static let query = """
+    SELECT
+      TraceId, SpanId, SpanName, Timestamp, ServiceName,
+      ResourceAttributes['agent.project']    AS AgentProject,
+      ResourceAttributes['agent.session.id'] AS AgentSessionId,
+      SpanAttributes['agent.run.id']         AS AgentRunId
+    FROM otel_traces
+    ORDER BY Timestamp DESC
+    LIMIT 50
+    FORMAT JSONEachRow
+    """
 
     private let endpointURL: URL?
     private let authorizationHeader: String
