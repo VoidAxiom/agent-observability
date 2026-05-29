@@ -249,7 +249,7 @@ function trustedLinkedWorktree(root) {
   return { ok: true, root: resolvedRoot }
 }
 
-function resolveWriteRoot(j, isSub, isImplAgent) {
+function resolveWriteRoot(j, isSub, isImplAgent, agentType, rawFp) {
   if (!isSub) return { root: MAIN_PROJECT_ROOT, cwd: MAIN_PROJECT_ROOT }
 
   // Generic env var name (project-agnostic). Worktrees provisioned by
@@ -257,6 +257,41 @@ function resolveWriteRoot(j, isSub, isImplAgent) {
   // and the spawning Claude can set TRUSTED_WORKTREE_ROOT to that path.
   const explicitRootRaw = process.env.TRUSTED_WORKTREE_ROOT || ''
   const hookCwdRaw = j.cwd ? String(j.cwd) : ''
+
+  // ui-implementer spawn-pattern accommodation (operator-ratified 2026-05-29):
+  // Claude Code's Task tool spawns subagents with cwd=main repo and no
+  // mechanism to set TRUSTED_WORKTREE_ROOT in the subagent env. So for the
+  // ui-implementer specifically (which uses Edit/Write/MultiEdit directly,
+  // unlike the generic implementer that dispatches codex exec with its own
+  // cwd handling), neither the cwd-infer nor the env-explicit branches
+  // below can fire. We derive the write root from the TARGET PATH's
+  // containing linked worktree instead — still security-bounded:
+  //   1. The target path must resolve into a real linked git worktree of
+  //      THIS main repo (trustedLinkedWorktree validates the .git pointer
+  //      round-trip, sibling-of-main location, etc).
+  //   2. The per-role scope check below still enforces web/** containment.
+  // This branch is ONLY taken for ui-implementer; the generic implementer
+  // still requires cwd-or-env trust signal (it has codex-spawn.sh setting
+  // cwd correctly, so this fallback isn't needed for it).
+  if (agentType === UI_IMPL_ROLE && rawFp) {
+    const absFp = path.isAbsolute(rawFp)
+      ? path.resolve(rawFp)
+      : path.resolve(MAIN_PROJECT_ROOT, rawFp)
+    let candidate = path.dirname(absFp)
+    while (candidate && candidate !== path.dirname(candidate)) {
+      if (fs.existsSync(path.join(candidate, '.git'))) {
+        const trusted = trustedLinkedWorktree(candidate)
+        if (trusted.ok) {
+          return { root: trusted.root, cwd: trusted.root }
+        }
+        break
+      }
+      candidate = path.dirname(candidate)
+    }
+    // Fall through to the standard resolution paths below — they'll either
+    // accept via cwd/env (rare for ui-implementer) or deny with the standard
+    // error pointing the user at TRUSTED_WORKTREE_ROOT.
+  }
 
   if (explicitRootRaw) {
     const explicitRoot = path.resolve(explicitRootRaw)
@@ -331,7 +366,7 @@ process.stdin.on('end', () => {
     const isImplAgent = isSub && (agentType === IMPL_ROLE || agentType === UI_IMPL_ROLE)
     const who = isSub ? `subagent "${agentId || agentTypeRaw || '?'}"` : 'Claude'
 
-    const rootSelection = resolveWriteRoot(j, isSub, isImplAgent)
+    const rootSelection = resolveWriteRoot(j, isSub, isImplAgent, agentType, rawFp)
     if (rootSelection.error) {
       return deny(who, rootSelection.error, rawFp, rootSelection.resolved)
     }
