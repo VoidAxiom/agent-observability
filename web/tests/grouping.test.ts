@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeTreeOrder,
   groupSpans,
+  parseTimestamp,
   reconcileSelection,
   type SpanRow,
 } from "../src/lib/grouping";
@@ -365,5 +366,49 @@ describe("reconcileSelection", () => {
     expect(cleared.selectedSessionId).toBeNull();
     expect(cleared.selectedTraceId).toBeNull();
     expect(cleared.selectedSpanId).toBeNull();
+  });
+});
+
+describe("parseTimestamp", () => {
+  const epoch = Date.UTC(2026, 0, 1, 0, 0, 0);
+
+  it("parses the ClickHouse nanosecond format", () => {
+    expect(parseTimestamp("2026-01-01T00:00:00.000000000")).toBe(epoch);
+  });
+
+  it("parses the space-separated form", () => {
+    expect(parseTimestamp("2026-01-01 00:00:00.000000000")).toBe(epoch);
+  });
+
+  it("parses an ISO timestamp with Z but no fractional seconds", () => {
+    // Regression: an earlier impl appended '.000' to the end of the string
+    // ('...Z.000'), producing an invalid timestamp that Date.parse rejected.
+    // The row would then be grouped with the distant-past sentinel and
+    // break last-activity ordering / duration / activity status.
+    expect(parseTimestamp("2026-01-01T00:00:00Z")).toBe(epoch);
+  });
+
+  it("parses an ISO timestamp with +HH:MM offset but no fractional seconds", () => {
+    expect(parseTimestamp("2026-01-01T00:00:00+00:00")).toBe(epoch);
+  });
+
+  it("parses an ISO timestamp with fractional seconds AND a Z suffix", () => {
+    expect(parseTimestamp("2026-01-01T00:00:00.500Z")).toBe(epoch + 500);
+  });
+
+  it("parses an ISO timestamp with fractional seconds AND a +HH:MM offset", () => {
+    expect(parseTimestamp("2026-01-01T00:00:00.500+00:00")).toBe(epoch + 500);
+  });
+
+  it("returns null for empty input", () => {
+    expect(parseTimestamp("")).toBeNull();
+  });
+
+  it("returns null for a '.' with no digits", () => {
+    expect(parseTimestamp("2026-01-01T00:00:00.Z")).toBeNull();
+  });
+
+  it("returns null for garbage after the fractional digits", () => {
+    expect(parseTimestamp("2026-01-01T00:00:00.500x")).toBeNull();
   });
 });

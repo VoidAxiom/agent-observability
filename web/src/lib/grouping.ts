@@ -449,28 +449,38 @@ export function parseTimestamp(value: string): number | null {
 function normalizeTimestamp(value: string): string | null {
   if (!value) return null;
   let s = value.replace(" ", "T");
-  // Find an optional ".<digits>" fractional section.
-  const dotIdx = s.indexOf(".");
+  // Split off any trailing timezone suffix so we can insert milliseconds
+  // before it — appending blindly turns "2026-01-01T00:00:00Z" into
+  // "2026-01-01T00:00:00Z.000" which Date.parse rejects.
+  const tzMatch = s.match(/([zZ]|[+-]\d{2}:?\d{2})$/);
+  const tz = tzMatch ? tzMatch[0] : "";
+  const head = tz ? s.slice(0, s.length - tz.length) : s;
+  // Find an optional ".<digits>" fractional section on the headless body.
+  let normalizedHead: string;
+  const dotIdx = head.indexOf(".");
   if (dotIdx >= 0) {
     let cursor = dotIdx + 1;
     let fractional = "";
-    while (cursor < s.length && /[0-9]/.test(s[cursor]!)) {
-      fractional += s[cursor];
+    while (cursor < head.length && /[0-9]/.test(head[cursor]!)) {
+      fractional += head[cursor];
       cursor += 1;
     }
     if (fractional === "") {
       // ".X" with no digits — bail.
       return null;
     }
+    if (cursor !== head.length) {
+      // Garbage between the fractional digits and the (already-stripped)
+      // tz suffix — bail rather than silently truncate.
+      return null;
+    }
     const ms = fractional.slice(0, 3).padEnd(3, "0");
-    s = `${s.slice(0, dotIdx)}.${ms}${s.slice(cursor)}`;
+    normalizedHead = `${head.slice(0, dotIdx)}.${ms}`;
   } else {
-    s += ".000";
+    normalizedHead = `${head}.000`;
   }
-  // If it doesn't end in a timezone marker, append Z (UTC).
-  if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
-    s += "Z";
-  }
+  // Default to UTC when no timezone is supplied.
+  s = `${normalizedHead}${tz || "Z"}`;
   // Quick well-formed gate: must look like an ISO date+time.
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}/.test(s)) return null;
   return s;
