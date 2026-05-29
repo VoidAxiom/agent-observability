@@ -1,23 +1,27 @@
 """Bootstrap the OpenTelemetry tracer pipeline for agent-obs-sdk.
 
-M0 walking-skeleton: sets up a TracerProvider with an OTLP/gRPC exporter
-pointing at the Collector from VOI-307 (default localhost:4317), wires the
-OpenAI auto-instrumentor defensively (no-op if the openai SDK isn't installed),
-and returns the provider so callers can `force_flush()` / `shutdown()` on exit.
+Sets up a TracerProvider with an OTLP/gRPC exporter pointing at the Collector
+(default localhost:4317), wires the OpenAI auto-instrumentor defensively
+(no-op if the openai SDK isn't installed), and returns the provider so callers
+can `force_flush()` / `shutdown()` on exit.
 
-Provenance attributes (agent.project / agent.session.id) land in M1 (VOI-311).
+Stamps provenance: agent.project + agent.session.id on the Resource, and
+agent.run.id on spans started inside run_context() (see run_context.py).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import uuid
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+from agent_obs_sdk.run_context import RunIdSpanProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,7 @@ SERVICE_NAME = "agent-obs-sdk"
 _PROVIDER: TracerProvider | None = None
 
 
-def bootstrap() -> TracerProvider:
+def bootstrap(project: str, session_id: str | None = None) -> TracerProvider:
     """Initialize the global OTel TracerProvider for the SDK.
 
     Idempotent: calling `bootstrap()` again returns the same provider the
@@ -48,7 +52,29 @@ def bootstrap() -> TracerProvider:
         may lose queued spans).
     """
     global _PROVIDER
+    if not project:
+        raise ValueError("bootstrap() requires a non-empty project")
+    if session_id is not None and not session_id:
+        raise ValueError("bootstrap() session_id, if provided, must be non-empty")
+
     if _PROVIDER is not None:
+        cached_project = _PROVIDER.resource.attributes.get("agent.project")
+        if project != cached_project:
+            logger.warning(
+                "bootstrap() already initialized with agent.project=%r; "
+                "ignoring new value %r (the first provider wins).",
+                cached_project,
+                project,
+            )
+        if session_id is not None:
+            cached_session = _PROVIDER.resource.attributes.get("agent.session.id")
+            if session_id != cached_session:
+                logger.warning(
+                    "bootstrap() already initialized with agent.session.id=%r; "
+                    "ignoring new value %r (the first provider wins).",
+                    cached_session,
+                    session_id,
+                )
         return _PROVIDER
 
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", DEFAULT_OTLP_ENDPOINT)
@@ -56,9 +82,19 @@ def bootstrap() -> TracerProvider:
     # else (bare host:port, or http://) implies an insecure channel.
     insecure = not endpoint.startswith("https://")
 
-    resource = Resource.create({"service.name": SERVICE_NAME})
+    if session_id is None:
+        session_id = str(uuid.uuid4())
+
+    resource = Resource.create(
+        {
+            "service.name": SERVICE_NAME,
+            "agent.project": project,
+            "agent.session.id": session_id,
+        }
+    )
     provider = TracerProvider(resource=resource)
     exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
+    provider.add_span_processor(RunIdSpanProcessor())
     provider.add_span_processor(BatchSpanProcessor(exporter))
     existing = trace.get_tracer_provider()
     if not isinstance(existing, trace.ProxyTracerProvider):
@@ -78,8 +114,8 @@ def bootstrap() -> TracerProvider:
     # Wire the OpenAI auto-instrumentor defensively. The Traceloop-flavored
     # `opentelemetry-instrumentation-openai` distribution executes `import openai`
     # at module-import time, so the import itself raises ModuleNotFoundError when
-    # the `openai` SDK isn't installed. M0 doesn't need it actively; M1 (VOI-311)
-    # will add a real openai dependency once we wire LLM calls.
+    # the `openai` SDK isn't installed. A later milestone that wires real LLM
+    # calls will add the openai dependency; until then this stays a defensive no-op.
     try:
         from opentelemetry.instrumentation.openai import OpenAIInstrumentor
 
