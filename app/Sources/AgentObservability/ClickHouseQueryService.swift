@@ -110,12 +110,12 @@ actor ClickHouseQueryService {
             return []
         }
 
-        var childrenByParent: [String: [SpanRowModel]] = [:]
+        var childrenByParent: [SpanTreeIdentity: [SpanRowModel]] = [:]
         for row in rows {
-            childrenByParent[row.ParentSpanId, default: []].append(row)
+            childrenByParent[SpanTreeIdentity(traceId: row.TraceId, spanId: row.ParentSpanId), default: []].append(row)
         }
 
-        let spanIds = Set(rows.map(\.SpanId))
+        let spanIds = Set(rows.map(SpanTreeIdentity.init(row:)))
         func sortedByTimestamp(_ rows: [SpanRowModel]) -> [SpanRowModel] {
             rows.enumerated()
                 .sorted { lhs, rhs in
@@ -129,13 +129,14 @@ actor ClickHouseQueryService {
 
         let roots = sortedByTimestamp(rows
             .filter { row in
-                row.ParentSpanId.isEmpty
+                let parentIdentity = SpanTreeIdentity(traceId: row.TraceId, spanId: row.ParentSpanId)
+                return row.ParentSpanId.isEmpty
                     || row.ParentSpanId == "0000000000000000"
-                    || !spanIds.contains(row.ParentSpanId)
+                    || !spanIds.contains(parentIdentity)
             })
 
         let maxDepth = min(50, rows.count)
-        var visitedSpanIds = Set<String>()
+        var visitedSpanIds = Set<SpanTreeIdentity>()
         var orderedRows: [SpanRowModel] = []
         orderedRows.reserveCapacity(rows.count)
 
@@ -144,16 +145,17 @@ actor ClickHouseQueryService {
                 return
             }
 
-            guard !visitedSpanIds.contains(node.SpanId) else {
+            let nodeIdentity = SpanTreeIdentity(row: node)
+            guard !visitedSpanIds.contains(nodeIdentity) else {
                 return
             }
-            visitedSpanIds.insert(node.SpanId)
+            visitedSpanIds.insert(nodeIdentity)
 
             var row = node
             row.depth = depth
             orderedRows.append(row)
 
-            let children = sortedByTimestamp(childrenByParent[node.SpanId] ?? [])
+            let children = sortedByTimestamp(childrenByParent[nodeIdentity] ?? [])
             for child in children {
                 visit(child, depth: depth + 1)
             }
@@ -164,6 +166,20 @@ actor ClickHouseQueryService {
         }
 
         return orderedRows
+    }
+
+    private struct SpanTreeIdentity: Hashable {
+        let traceId: String
+        let spanId: String
+
+        init(traceId: String, spanId: String) {
+            self.traceId = traceId
+            self.spanId = spanId
+        }
+
+        init(row: SpanRowModel) {
+            self.init(traceId: row.TraceId, spanId: row.SpanId)
+        }
     }
 }
 

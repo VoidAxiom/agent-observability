@@ -97,6 +97,23 @@ import Testing
     #expect(ordered.map(\.id) == ["trace-root", "trace-child"])
 }
 
+@Test func treeBookkeepingIsScopedByTraceWhenSpanIdsCollide() {
+    let rows = [
+        span(traceId: "trace-b", spanId: "shared", timestamp: "2026-01-01T00:00:01.000000000"),
+        span(traceId: "trace-a", spanId: "child", parentSpanId: "shared", timestamp: "2026-01-01T00:00:02.000000000"),
+        span(traceId: "trace-a", spanId: "shared", timestamp: "2026-01-01T00:00:03.000000000")
+    ]
+
+    let ordered = ClickHouseQueryService.computeTreeOrder(rows)
+
+    #expect(ordered.map { "\($0.TraceId):\($0.SpanId)" } == [
+        "trace-b:shared",
+        "trace-a:shared",
+        "trace-a:child"
+    ])
+    #expect(depths(ordered) == [0, 0, 1])
+}
+
 private func span(
     traceId: String = "trace",
     spanId: String,
