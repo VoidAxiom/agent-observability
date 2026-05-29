@@ -75,7 +75,7 @@ enum SessionGrouping {
                 ?? ""
             let serviceName = firstSortedNonEmpty(sessionRows.map(\.ServiceName)) ?? "unknown service"
             let dates = datedRows(sessionRows)
-            let lastDate = dates.max(by: { $0.date < $1.date })
+            let lastDate = latestEndingRow(from: dates)
             let duration = durationSeconds(from: dates)
 
             return SessionGroup(
@@ -83,7 +83,7 @@ enum SessionGrouping {
                 displayLabel: displayLabel(projectName: projectName, key: sessionKey),
                 serviceName: serviceName,
                 projectName: projectName,
-                lastActivity: lastDate?.date ?? .distantPast,
+                lastActivity: lastDate?.endDate ?? .distantPast,
                 lastActivityText: lastDate?.row.Timestamp ?? "",
                 spanCount: sortedTraces.reduce(0) { $0 + $1.spanCount },
                 traceCount: sortedTraces.count,
@@ -128,7 +128,7 @@ enum SessionGrouping {
             let orderedRows = ClickHouseQueryService.computeTreeOrder(traceRows)
             let dates = datedRows(traceRows)
             let firstDate = dates.min(by: { $0.date < $1.date })
-            let lastDate = dates.max(by: { $0.date < $1.date })
+            let lastDate = latestEndingRow(from: dates)
             let label = firstNonEmpty([orderedRows.first?.SpanName ?? ""])
                 ?? firstNonEmpty([traceRows.sorted { lhs, rhs in
                     if lhs.Timestamp == rhs.Timestamp {
@@ -143,7 +143,7 @@ enum SessionGrouping {
                 displayLabel: label,
                 rootStart: firstDate?.date ?? .distantPast,
                 rootStartText: firstDate?.row.Timestamp ?? "",
-                lastActivity: lastDate?.date ?? .distantPast,
+                lastActivity: lastDate?.endDate ?? .distantPast,
                 lastActivityText: lastDate?.row.Timestamp ?? "",
                 spanCount: orderedRows.count,
                 durationSeconds: durationSeconds(from: dates),
@@ -155,9 +155,8 @@ enum SessionGrouping {
 
     private static func effectiveSessionKey(for row: SpanRowModel) -> String {
         firstNonEmpty([
-            row.AgentSessionId,
             row.SessionId,
-            row.AgentRunId,
+            row.AgentSessionId,
             row.TraceId
         ]) ?? row.id
     }
@@ -184,22 +183,34 @@ enum SessionGrouping {
         }
     }
 
+    private static func endTime(of datedRow: (row: SpanRowModel, date: Date)) -> Date? {
+        guard datedRow.date != .distantPast else {
+            return nil
+        }
+        return datedRow.date.addingTimeInterval(Double(datedRow.row.Duration) / 1_000_000_000)
+    }
+
+    private static func latestEndingRow(
+        from dates: [(row: SpanRowModel, date: Date)]
+    ) -> (row: SpanRowModel, endDate: Date)? {
+        dates.compactMap { datedRow -> (row: SpanRowModel, endDate: Date)? in
+            guard let endDate = endTime(of: datedRow) else {
+                return nil
+            }
+            return (row: datedRow.row, endDate: endDate)
+        }
+        .max(by: { $0.endDate < $1.endDate })
+    }
+
     private static func durationSeconds(from dates: [(row: SpanRowModel, date: Date)]) -> Double {
-        guard
-            let first = dates.min(by: { $0.date < $1.date })?.date,
-            first != .distantPast
-        else {
+        let validDates = dates.filter { $0.date != .distantPast }
+        guard let first = validDates.min(by: { $0.date < $1.date })?.date else {
             return 0
         }
 
-        let lastEnd = dates
-            .filter { $0.date != .distantPast }
-            .map { $0.date.addingTimeInterval(Double($0.row.Duration) / 1_000_000_000) }
-            .max()
-
-        guard let lastEnd else {
-            return 0
-        }
+        let lastEnd = validDates
+            .compactMap { endTime(of: $0) }
+            .max() ?? first
 
         return max(0, lastEnd.timeIntervalSince(first))
     }

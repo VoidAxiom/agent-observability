@@ -208,7 +208,7 @@ import Testing
     #expect(rows.first?.SpanAttributesRaw == [:])
 }
 
-@Test func groupSpansUsesAgentSessionIdAsEffectiveSessionKey() {
+@Test func groupSpansUsesSessionIdAsEffectiveSessionKey() {
     let sessions = SessionGrouping.groupSpans([
         span(
             spanId: "root",
@@ -219,24 +219,24 @@ import Testing
         )
     ])
 
-    #expect(sessions.map(\.id) == ["agent-1"])
-    #expect(sessions.first?.displayLabel == "project-name · agent-1")
+    #expect(sessions.map(\.id) == ["span-1"])
+    #expect(sessions.first?.displayLabel == "project-name · span-1")
 }
 
-@Test func groupSpansUsesSpanSessionIdWhenAgentSessionIdIsMissing() {
+@Test func groupSpansFallsBackToAgentSessionIdWhenSessionIdIsMissing() {
     let sessions = SessionGrouping.groupSpans([
         span(
             spanId: "root",
             timestamp: "2026-01-01T00:00:01.000000000",
-            agentSessionId: "",
-            sessionId: "span-session"
+            agentSessionId: "agent-1",
+            sessionId: ""
         )
     ])
 
-    #expect(sessions.map(\.id) == ["span-session"])
+    #expect(sessions.map(\.id) == ["agent-1"])
 }
 
-@Test func groupSpansFallsBackToRunIdThenTraceIdForSessionKey() {
+@Test func groupSpansFallsBackToTraceIdWhenSessionAndAgentSessionAreMissing() {
     let sessions = SessionGrouping.groupSpans([
         span(
             traceId: "trace-fallback",
@@ -251,12 +251,12 @@ import Testing
             spanId: "run-root",
             timestamp: "2026-01-01T00:00:01.000000000",
             agentSessionId: "",
-            agentRunId: "run-1",
+            agentRunId: "",
             sessionId: ""
         )
     ])
 
-    #expect(sessions.map(\.id) == ["trace-fallback", "run-1"])
+    #expect(sessions.map(\.id) == ["trace-fallback", "trace-run"])
 }
 
 @Test func groupSpansComputesSessionRollupsFromRows() {
@@ -384,6 +384,30 @@ import Testing
     #expect(abs((trace?.durationSeconds ?? 0) - 11.0) < 0.001)
 }
 
+@Test func lastActivityUsesSpanEndTimeNotStartTime() {
+    let longSpanTimestamp = "2026-01-01T00:00:00.000000000"
+    let laterShortSpanTimestamp = "2026-01-01T00:00:01.000000000"
+    let sessions = SessionGrouping.groupSpans([
+        span(
+            spanId: "long-span",
+            timestamp: longSpanTimestamp,
+            duration: 10_000_000_000
+        ),
+        span(
+            spanId: "later-short",
+            timestamp: laterShortSpanTimestamp,
+            duration: 0
+        )
+    ])
+
+    let session = sessions.first
+    let trace = sessions.first?.traces.first
+
+    #expect(session?.lastActivityText == longSpanTimestamp)
+    #expect(trace?.lastActivityText == longSpanTimestamp)
+    #expect(abs((trace?.durationSeconds ?? 0) - 10.0) < 0.001)
+}
+
 @Test func traceDisplayLabelFallsBackWhenSpanNameIsEmpty() {
     let traceId = "trace-empty-name"
     let sessions = SessionGrouping.groupSpans([
@@ -419,10 +443,13 @@ import Testing
         span(spanId: "root", timestamp: "2026-01-01T00:00:00.000000000")
     ])
     let session = sessions[0]
+    let activeNow = session.lastActivity.addingTimeInterval(4 * 60)
+    let idleNow = session.lastActivity.addingTimeInterval(30 * 60)
+    let staleNow = session.lastActivity.addingTimeInterval(2 * 60 * 60)
 
-    #expect(session.activityStatus(now: session.lastActivity.addingTimeInterval(4 * 60)) == .active)
-    #expect(session.activityStatus(now: session.lastActivity.addingTimeInterval(30 * 60)) == .idle)
-    #expect(session.activityStatus(now: session.lastActivity.addingTimeInterval(2 * 60 * 60)) == .stale)
+    #expect(session.activityStatus(now: activeNow) == .active)
+    #expect(session.activityStatus(now: idleNow) == .idle)
+    #expect(session.activityStatus(now: staleNow) == .stale)
 }
 
 @Test func reconcileSelectionKeepsOnlyPresentIds() {
@@ -465,6 +492,18 @@ import Testing
 
     #expect(groupedSpan?.ResourceAttributesRaw == ["b": "resource-b", "a": "resource-a"])
     #expect(groupedSpan?.SpanAttributesRaw == ["d": "span-d", "c": "span-c"])
+}
+
+@Test func traceDurationIsZeroWhenAllTimestampsUnparseable() {
+    let sessions = SessionGrouping.groupSpans([
+        span(spanId: "root", timestamp: "not-a-timestamp-1"),
+        span(spanId: "child-a", parentSpanId: "root", timestamp: "garbage"),
+        span(spanId: "child-b", parentSpanId: "root", timestamp: "still-not-a-date")
+    ])
+
+    let trace = sessions.first?.traces.first
+
+    #expect(trace?.durationSeconds == 0)
 }
 
 private func span(
