@@ -3,7 +3,7 @@ import Foundation
 actor ClickHouseQueryService {
     private static let query = """
     SELECT
-      TraceId, SpanId, SpanName, Timestamp, ServiceName,
+      TraceId, SpanId, ParentSpanId, SpanName, Timestamp, ServiceName,
       ResourceAttributes['agent.project']    AS AgentProject,
       ResourceAttributes['agent.session.id'] AS AgentSessionId,
       SpanAttributes['agent.run.id']         AS AgentRunId
@@ -91,7 +91,7 @@ actor ClickHouseQueryService {
         let decoder = JSONDecoder()
         let responseText = String(decoding: data, as: UTF8.self)
 
-        return responseText
+        let rows = responseText
             .split(separator: "\n", omittingEmptySubsequences: true)
             .compactMap { line in
                 do {
@@ -101,6 +101,85 @@ actor ClickHouseQueryService {
                     return nil
                 }
             }
+
+        return computeTreeOrder(rows)
+    }
+
+    internal static func computeTreeOrder(_ rows: [SpanRowModel]) -> [SpanRowModel] {
+        guard !rows.isEmpty else {
+            return []
+        }
+
+        var childrenByParent: [SpanTreeIdentity: [SpanRowModel]] = [:]
+        for row in rows {
+            childrenByParent[SpanTreeIdentity(traceId: row.TraceId, spanId: row.ParentSpanId), default: []].append(row)
+        }
+
+        let spanIds = Set(rows.map(SpanTreeIdentity.init(row:)))
+        func sortedByTimestamp(_ rows: [SpanRowModel]) -> [SpanRowModel] {
+            rows.enumerated()
+                .sorted { lhs, rhs in
+                    if lhs.element.Timestamp == rhs.element.Timestamp {
+                        return lhs.offset < rhs.offset
+                    }
+                    return lhs.element.Timestamp < rhs.element.Timestamp
+                }
+                .map(\.element)
+        }
+
+        let roots = sortedByTimestamp(rows
+            .filter { row in
+                let parentIdentity = SpanTreeIdentity(traceId: row.TraceId, spanId: row.ParentSpanId)
+                return row.ParentSpanId.isEmpty
+                    || row.ParentSpanId == "0000000000000000"
+                    || !spanIds.contains(parentIdentity)
+            })
+
+        let maxDepth = min(50, rows.count)
+        var visitedSpanIds = Set<SpanTreeIdentity>()
+        var orderedRows: [SpanRowModel] = []
+        orderedRows.reserveCapacity(rows.count)
+
+        func visit(_ node: SpanRowModel, depth: Int) {
+            guard depth < maxDepth else {
+                return
+            }
+
+            let nodeIdentity = SpanTreeIdentity(row: node)
+            guard !visitedSpanIds.contains(nodeIdentity) else {
+                return
+            }
+            visitedSpanIds.insert(nodeIdentity)
+
+            var row = node
+            row.depth = depth
+            orderedRows.append(row)
+
+            let children = sortedByTimestamp(childrenByParent[nodeIdentity] ?? [])
+            for child in children {
+                visit(child, depth: depth + 1)
+            }
+        }
+
+        for root in roots {
+            visit(root, depth: 0)
+        }
+
+        return orderedRows
+    }
+
+    private struct SpanTreeIdentity: Hashable {
+        let traceId: String
+        let spanId: String
+
+        init(traceId: String, spanId: String) {
+            self.traceId = traceId
+            self.spanId = spanId
+        }
+
+        init(row: SpanRowModel) {
+            self.init(traceId: row.TraceId, spanId: row.SpanId)
+        }
     }
 }
 

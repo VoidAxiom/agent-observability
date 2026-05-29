@@ -7,6 +7,11 @@ struct SpanRow: View {
         VStack(alignment: .leading) {
             HStack {
                 Text(model.TraceId.prefix(8))
+                if model.depth > 0 {
+                    Text("└─")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text(model.SpanName)
                     .font(.headline)
                 Spacer()
@@ -23,6 +28,7 @@ struct SpanRow: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .padding(.leading, CGFloat(model.depth) * 16)
     }
 
     private var provenanceText: String? {
