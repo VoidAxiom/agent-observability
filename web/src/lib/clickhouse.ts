@@ -37,14 +37,19 @@ export interface ClickHouseConfig {
 // request when interpolated into a URL template.
 const HOSTNAME_RE = /^(?:\[[0-9a-fA-F:]+\]|[A-Za-z0-9][A-Za-z0-9.-]*)$/;
 
-export function loadConfigFromEnv(): ClickHouseConfig {
-  const env = (import.meta as ImportMeta).env ?? {};
-  const portRaw = env.VITE_CH_HTTP_PORT ?? "";
+export function loadConfigFromEnv(
+  env: ImportMetaEnv = (import.meta as ImportMeta).env ?? ({} as ImportMetaEnv),
+): ClickHouseConfig {
+  // Repo-standard names (`CH_*`) win — match clickhouse/migrate.sh,
+  // docker-compose.yml, and the Swift app — falling back to the
+  // `VITE_CH_*` prefix for web-only overrides during dev. vite.config.ts
+  // adds `CH_` to `envPrefix` so Vite actually exposes them to client code.
+  const portRaw = env.CH_HTTP_PORT ?? env.VITE_CH_HTTP_PORT ?? "";
   // Use Number() not parseInt() so trailing garbage ("8123x") returns NaN
   // instead of silently parsing as 8123.
   const portNum = typeof portRaw === "string" ? Number(portRaw) : NaN;
   return {
-    host: env.VITE_CH_HOST ?? "localhost",
+    host: env.CH_HOST ?? env.VITE_CH_HOST ?? "localhost",
     // Cap to the WHATWG URL port range so an out-of-range value (e.g.
     // 65536) doesn't pass the local check only to be silently dropped by
     // `url.port`, which would otherwise default the endpoint to port 80.
@@ -55,9 +60,9 @@ export function loadConfigFromEnv(): ClickHouseConfig {
       Number.isInteger(portNum)
         ? portNum
         : 8123,
-    database: env.VITE_CH_DATABASE ?? "default",
-    username: env.VITE_CH_USERNAME ?? "default",
-    password: env.VITE_CH_PASSWORD ?? "",
+    database: env.CH_DATABASE ?? env.VITE_CH_DATABASE ?? "default",
+    username: env.CH_USERNAME ?? env.VITE_CH_USERNAME ?? "default",
+    password: env.CH_PASSWORD ?? env.VITE_CH_PASSWORD ?? "",
   };
 }
 
