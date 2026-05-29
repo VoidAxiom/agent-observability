@@ -22,8 +22,14 @@ new_traceparent() {
   printf '00-%s-%s-01\n' "$trace_id" "$span_id"
 }
 
+traceparent_ids_nonzero() {
+  local version trace_id span_id trace_flags
+  IFS='-' read -r version trace_id span_id trace_flags <<< "$1"
+  [[ "$trace_id" != '00000000000000000000000000000000' && "$span_id" != '0000000000000000' ]]
+}
+
 resolve_traceparent() {
-  if [[ "${TRACEPARENT:-}" =~ $TRACEPARENT_RE ]]; then
+  if [[ "${TRACEPARENT:-}" =~ $TRACEPARENT_RE ]] && traceparent_ids_nonzero "$TRACEPARENT"; then
     RESOLVED_TRACEPARENT="$TRACEPARENT"
     TRACEPARENT_SOURCE='inherited'
   else
