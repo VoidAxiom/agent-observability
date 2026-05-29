@@ -6,6 +6,7 @@ import {
   ClickHouseError,
   fetchOnce,
   loadConfigFromEnv,
+  validateUpstreamConfig,
 } from "../src/lib/clickhouse";
 
 // Vitest gives each module its own `import.meta.env`, so mutating the
@@ -169,6 +170,48 @@ describe("loadConfigFromEnv", () => {
     expect(loadConfigFromEnv(envFrom({ CH_HTTP_PORT: "65536" })).port).toBe(
       8123,
     );
+  });
+});
+
+describe("validateUpstreamConfig", () => {
+  it("returns the absolute upstream URL when the config validates", () => {
+    // Named, returns-a-value helper — refactor-safe so a future cleanup
+    // can't silently delete the only validation path on fetchOnce. Also
+    // the single source of truth vite.config.ts reuses to keep its
+    // dev-proxy target in lockstep with the loader.
+    expect(
+      validateUpstreamConfig({
+        host: "127.0.0.1",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      }),
+    ).toBe("http://127.0.0.1:8123/?database=default");
+  });
+
+  it("throws ClickHouseError on a bad host (so vite.config.ts surfaces an env-typo at boot)", () => {
+    expect(() =>
+      validateUpstreamConfig({
+        host: "evil host",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      }),
+    ).toThrow(ClickHouseError);
+  });
+
+  it("throws ClickHouseError on a malformed IPv6 the URL setter would silently no-op", () => {
+    expect(() =>
+      validateUpstreamConfig({
+        host: "[::::]",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      }),
+    ).toThrow(ClickHouseError);
   });
 });
 

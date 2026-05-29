@@ -1,5 +1,10 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import {
+  ClickHouseError,
+  loadConfigFromEnv,
+  validateUpstreamConfig,
+} from "./src/lib/clickhouse";
 
 export default defineConfig(({ mode }) => {
   // Read .env files from the repo root, not web/. The repo-standard
@@ -12,10 +17,31 @@ export default defineConfig(({ mode }) => {
   // loadEnv honors envPrefix, so request both prefixes here too. Used to
   // derive the dev-proxy target below.
   const env = loadEnv(mode, envDir, ["VITE_", "CH_"]);
-  const chHost = env.CH_HOST ?? env.VITE_CH_HOST ?? "localhost";
-  const chPortRaw = env.CH_HTTP_PORT ?? env.VITE_CH_HTTP_PORT ?? "8123";
-  const chPort = Number(chPortRaw);
-  const proxyTarget = `http://${chHost}:${Number.isFinite(chPort) && chPort > 0 ? chPort : 8123}`;
+  // Reuse the SAME loader + validator the SPA uses, so the dev-proxy
+  // target and the browser loader agree on what's a legal host/port.
+  // Without this, vite.config.ts would silently accept (e.g.) port 81234
+  // or bare-IPv6 `::1` that loadConfigFromEnv / buildEndpointUrl reject —
+  // dev would 502 on every /ch and the failure would look like a CH
+  // outage instead of an env typo. Bracket IPv6 + integer/range port +
+  // hostname grammar all flow from the same one source of truth.
+  const chConfig = loadConfigFromEnv(env as ImportMetaEnv);
+  let proxyTarget: string;
+  try {
+    // validateUpstreamConfig returns the absolute upstream URL; we want
+    // the origin (no `?database=…` suffix) as the proxy target so the
+    // /ch rewrite produces /?database=… at ClickHouse.
+    const validated = new URL(validateUpstreamConfig(chConfig));
+    proxyTarget = `${validated.protocol}//${validated.host}`;
+  } catch (err) {
+    if (err instanceof ClickHouseError) {
+      throw new Error(
+        `[vite.config] Invalid CH_* env for dev-proxy target: ${err.message}. ` +
+          `Fix CH_HOST/CH_HTTP_PORT in the repo-root .env (loader and dev-proxy share the same validator).`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
 
   return {
     plugins: [react()],
