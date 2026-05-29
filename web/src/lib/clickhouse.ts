@@ -63,11 +63,13 @@ export function buildEndpointUrl(config: ClickHouseConfig): string {
     );
   }
   // Build via assignment rather than template interpolation so URL parser
-  // can't be fooled by characters that survive the regex check.
+  // can't be fooled by characters that survive the regex check. IPv6
+  // literals must keep their brackets when assigned to `hostname` — the
+  // URL spec rejects unbracketed `::1` and silently leaves the previous
+  // hostname (the "placeholder" sentinel) in place, so the eventual
+  // request would target the wrong host.
   const url = new URL("http://placeholder/");
-  url.hostname = config.host.startsWith("[")
-    ? config.host.slice(1, -1)
-    : config.host;
+  url.hostname = config.host;
   url.port = String(config.port);
   url.pathname = "/";
   url.searchParams.set("database", config.database);
