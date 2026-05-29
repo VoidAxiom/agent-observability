@@ -67,6 +67,21 @@ describe("buildEndpointUrl", () => {
     ).toThrow(ClickHouseError);
   });
 
+  it("accepts the http scheme default port (80) which URL canonicalizes to empty", () => {
+    // Regression: WHATWG URL drops port=80 on http: URLs to '' as a
+    // canonicalization shortcut. An earlier strict equality check
+    // incorrectly rejected this legitimate "ClickHouse behind a reverse
+    // proxy on :80" case.
+    const url = buildEndpointUrl({
+      host: "ch.example.com",
+      port: 80,
+      database: "default",
+      username: "default",
+      password: "",
+    });
+    expect(url).toBe("http://ch.example.com/?database=default");
+  });
+
   it("rejects out-of-range ports the URL parser silently drops", () => {
     // Regression: port 65536 passes the local integer check but the URL
     // setter rejects it and drops the port (defaulting to scheme default

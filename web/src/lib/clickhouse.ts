@@ -90,8 +90,18 @@ export function buildEndpointUrl(config: ClickHouseConfig): string {
       0,
     );
   }
-  url.port = String(config.port);
-  if (url.port !== String(config.port)) {
+  // WHATWG URL canonicalizes a scheme-default port (http=80) to an empty
+  // `url.port` string while still routing requests at that port — so a
+  // strict equality check would falsely reject the legitimate `port: 80`
+  // case (ClickHouse behind an HTTP reverse proxy). Accept the empty
+  // canonicalization for the http scheme's default port; reject everything
+  // else (e.g. the silent-drop case where `port: 65536` leaves `url.port`
+  // empty too).
+  const portStr = String(config.port);
+  url.port = portStr;
+  const portAccepted =
+    url.port === portStr || (url.port === "" && config.port === 80);
+  if (!portAccepted) {
     throw new ClickHouseError(
       `Invalid ClickHouse port ${config.port}: rejected by URL parser`,
       0,
