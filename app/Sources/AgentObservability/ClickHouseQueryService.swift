@@ -6,10 +6,16 @@ actor ClickHouseQueryService {
       TraceId, SpanId, ParentSpanId, SpanName, Timestamp, ServiceName,
       ResourceAttributes['agent.project']    AS AgentProject,
       ResourceAttributes['agent.session.id'] AS AgentSessionId,
-      SpanAttributes['agent.run.id']         AS AgentRunId
+      SpanAttributes['agent.run.id']         AS AgentRunId,
+      SpanAttributes['session.id']           AS SessionId,
+      ResourceAttributes['project.name']     AS ProjectName,
+      ResourceAttributes                     AS ResourceAttributesRaw,
+      SpanAttributes                         AS SpanAttributesRaw,
+      StatusCode,
+      Duration
     FROM otel_traces
     ORDER BY Timestamp DESC
-    LIMIT 50
+    LIMIT 1000
     FORMAT JSONEachRow
     """
 
@@ -87,8 +93,22 @@ actor ClickHouseQueryService {
         return Self.decodeRows(from: data)
     }
 
-    private static func decodeRows(from data: Data) -> [SpanRow.Model] {
+    static func decodeRows(from data: Data) -> [SpanRow.Model] {
         let decoder = JSONDecoder()
+
+        switch firstNonWhitespaceByte(in: data) {
+        case 91:
+            if let rows = try? decoder.decode([SpanRow.Model].self, from: data) {
+                return rows
+            }
+        case 123:
+            if isSingleTopLevelJSONObject(data), let row = try? decoder.decode(SpanRow.Model.self, from: data) {
+                return [row]
+            }
+        default:
+            break
+        }
+
         let responseText = String(decoding: data, as: UTF8.self)
 
         let rows = responseText
@@ -102,7 +122,11 @@ actor ClickHouseQueryService {
                 }
             }
 
-        return computeTreeOrder(rows)
+        return rows
+    }
+
+    static func decodeRows(fromText text: String) -> [SpanRow.Model] {
+        decodeRows(from: Data(text.utf8))
     }
 
     internal static func computeTreeOrder(_ rows: [SpanRowModel]) -> [SpanRowModel] {
@@ -135,7 +159,8 @@ actor ClickHouseQueryService {
                     || !spanIds.contains(parentIdentity)
             })
 
-        let maxDepth = min(50, rows.count)
+        // Align traversal ceiling with the query LIMIT 1000 while bounding pathological cycles.
+        let maxDepth = min(1000, rows.count)
         var visitedSpanIds = Set<SpanTreeIdentity>()
         var orderedRows: [SpanRowModel] = []
         orderedRows.reserveCapacity(rows.count)
@@ -166,6 +191,59 @@ actor ClickHouseQueryService {
         }
 
         return orderedRows
+    }
+
+    private static func firstNonWhitespaceByte(in data: Data) -> UInt8? {
+        data.first { !isJSONWhitespace($0) }
+    }
+
+    private static func isSingleTopLevelJSONObject(_ data: Data) -> Bool {
+        guard firstNonWhitespaceByte(in: data) == 123 else {
+            return false
+        }
+
+        // Distinguish pretty single-object fixtures from JSONEachRow by checking
+        // whether the first object's matching close is the final non-whitespace byte.
+        var depth = 0
+        var inString = false
+        var isEscaped = false
+
+        for (index, byte) in data.enumerated() {
+            if depth == 0, isJSONWhitespace(byte) {
+                continue
+            }
+
+            if inString {
+                if isEscaped {
+                    isEscaped = false
+                } else if byte == 92 {
+                    isEscaped = true
+                } else if byte == 34 {
+                    inString = false
+                }
+                continue
+            }
+
+            if byte == 34 {
+                inString = true
+            } else if byte == 123 {
+                depth += 1
+            } else if byte == 125 {
+                depth -= 1
+                if depth == 0 {
+                    return data.dropFirst(index + 1).allSatisfy(isJSONWhitespace)
+                }
+                if depth < 0 {
+                    return false
+                }
+            }
+        }
+
+        return false
+    }
+
+    private static func isJSONWhitespace(_ byte: UInt8) -> Bool {
+        byte == 32 || byte == 9 || byte == 10 || byte == 13
     }
 
     private struct SpanTreeIdentity: Hashable {

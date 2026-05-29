@@ -1,21 +1,63 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var spans: [SpanRow.Model] = []
+    @State private var sessions: [SessionGroup] = []
+    @State private var selectedSessionId: String?
+    @State private var selectedTraceId: String?
+    @State private var selectedSpanId: String?
+    @State private var activityNow = Date()
 
     var body: some View {
-        List(spans) { span in
-            SpanRow(model: span)
+        NavigationSplitView {
+            SessionSidebar(
+                sessions: sessions,
+                selectedSessionId: $selectedSessionId,
+                now: activityNow
+            )
+        } content: {
+            TraceList(
+                session: selectedSession,
+                selectedTraceId: $selectedTraceId
+            )
+        } detail: {
+            SpanTreeAndInspector(
+                trace: selectedTrace,
+                selectedSpanId: $selectedSpanId
+            )
         }
-        .overlay {
-            if spans.isEmpty {
-                Text("No spans yet")
-                    .foregroundStyle(.secondary)
+        .onChange(of: sessions) { _, newSessions in
+            guard !newSessions.isEmpty else {
+                return
             }
+
+            let selection = SessionGrouping.reconcileSelection(
+                in: newSessions,
+                selectedSessionId: selectedSessionId,
+                selectedTraceId: selectedTraceId,
+                selectedSpanId: selectedSpanId
+            )
+            selectedSessionId = selection.selectedSessionId
+            selectedTraceId = selection.selectedTraceId
+            selectedSpanId = selection.selectedSpanId
+        }
+        .onChange(of: selectedSessionId) {
+            selectedTraceId = nil
+            selectedSpanId = nil
+        }
+        .onChange(of: selectedTraceId) {
+            selectedSpanId = nil
         }
         .task {
             await subscribe()
         }
+    }
+
+    private var selectedSession: SessionGroup? {
+        sessions.first { $0.id == selectedSessionId }
+    }
+
+    private var selectedTrace: TraceGroup? {
+        selectedSession?.traces.first { $0.id == selectedTraceId }
     }
 
     @MainActor
@@ -24,7 +66,8 @@ struct ContentView: View {
         let stream = await service.updates()
 
         for await rows in stream {
-            spans = rows
+            activityNow = Date()
+            sessions = SessionGrouping.groupSpans(rows)
         }
     }
 }
