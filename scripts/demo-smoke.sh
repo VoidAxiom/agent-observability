@@ -44,7 +44,27 @@ fi
 pushd sdk >/dev/null
 [ -d .venv ] || uv venv --python 3.11 .venv
 uv pip install -e . --quiet
-uv run python examples/smoke.py
+# Keep this demo reproducible on fresh dev boxes regardless of ambient
+# OTEL config from tools such as Langfuse, Grafana, or Claude Code telemetry.
+# The SDK honoring standard OTEL env is correct library behavior, so pin
+# the endpoint in this wrapper rather than in the library. Bare host:port is
+# gRPC; the SDK derives insecure from the absence of https://.
+#
+# Use an ALLOWLIST (`env -i`) rather than a denylist (`env -u`): the SDK reads
+# OTEL vars beyond the obvious three (e.g. OTEL_SDK_DISABLED,
+# OTEL_EXPORTER_OTLP_CERTIFICATE, per-signal _TRACES_* forms), so a denylist is
+# whack-a-mole while an allowlist is exhaustive by construction. `env -i` starts
+# from an empty environment; we re-add ONLY what uv/python structurally need
+# plus the pinned endpoint, so no ambient OTEL_* var (present or future) leaks.
+#   - PATH: so `env` finds `uv` and `uv` finds the managed Python 3.11 toolchain.
+#   - HOME: `uv` resolves its data dir (~/.local/share/uv: managed Python + venv)
+#     and cache from HOME.
+#   - OTEL_EXPORTER_OTLP_ENDPOINT: the only OTEL var passed; pins our Collector.
+env -i \
+    PATH="$PATH" \
+    HOME="$HOME" \
+    OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 \
+    uv run python examples/smoke.py
 popd >/dev/null
 
 sleep 3
