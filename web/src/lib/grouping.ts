@@ -312,11 +312,12 @@ function traceGroups(rows: SpanRow[]): TraceGroup[] {
       lastActivityText: last?.row.Timestamp ?? "",
       spanCount: orderedRows.length,
       durationSeconds: durationSecondsFromDates(dates),
-      // hasError reflects the visible (ordered) span set so the displayed
-      // "N spans, error" metadata stays internally consistent. An error
-      // attribute on a span dropped by computeTreeOrder (cycle-only trace)
-      // would otherwise surface as "0 spans, error" with no clickable row.
-      hasError: orderedRows.some(rowHasError),
+      // Error detection scans the raw trace rows (not the ordered/visible set),
+      // matching SessionGrouping.swift `traceRows.contains(where: rowHasError)`.
+      // A cycle-only trace whose spans were dropped by computeTreeOrder still
+      // surfaces as failing — losing that signal would let broken traces look
+      // healthy in the session list.
+      hasError: traceRows.some(rowHasError),
       spans: orderedRows,
     });
   }

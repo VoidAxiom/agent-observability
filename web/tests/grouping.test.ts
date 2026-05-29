@@ -312,6 +312,30 @@ describe("groupSpans", () => {
     expect(trace?.hasError).toBe(true);
     expect(sessions[0]?.hasError).toBe(true);
   });
+
+  it("hasErrorSurvivesCycleOnlyTrace", () => {
+    // Mirrors SessionGrouping.swift: error detection scans raw trace rows,
+    // not the ordered/visible set. A cycle-only trace whose spans are all
+    // dropped by computeTreeOrder must still surface as failing so broken
+    // traces do not look healthy in the session list.
+    const sessions = groupSpans([
+      span({
+        spanId: "a",
+        parentSpanId: "b",
+        timestamp: "2026-01-01T00:00:01.000000000",
+        statusCode: "Error",
+      }),
+      span({
+        spanId: "b",
+        parentSpanId: "a",
+        timestamp: "2026-01-01T00:00:02.000000000",
+      }),
+    ]);
+    const trace = sessions[0]?.traces[0];
+    expect(trace?.spanCount).toBe(0);
+    expect(trace?.hasError).toBe(true);
+    expect(sessions[0]?.hasError).toBe(true);
+  });
 });
 
 describe("reconcileSelection", () => {
