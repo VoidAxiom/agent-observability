@@ -45,8 +45,14 @@ export function loadConfigFromEnv(): ClickHouseConfig {
   const portNum = typeof portRaw === "string" ? Number(portRaw) : NaN;
   return {
     host: env.VITE_CH_HOST ?? "localhost",
+    // Cap to the WHATWG URL port range so an out-of-range value (e.g.
+    // 65536) doesn't pass the local check only to be silently dropped by
+    // `url.port`, which would otherwise default the endpoint to port 80.
     port:
-      Number.isFinite(portNum) && portNum > 0 && Number.isInteger(portNum)
+      Number.isFinite(portNum) &&
+      portNum > 0 &&
+      portNum <= 65535 &&
+      Number.isInteger(portNum)
         ? portNum
         : 8123,
     database: env.VITE_CH_DATABASE ?? "default",
@@ -68,9 +74,29 @@ export function buildEndpointUrl(config: ClickHouseConfig): string {
   // URL spec rejects unbracketed `::1` and silently leaves the previous
   // hostname (the "placeholder" sentinel) in place, so the eventual
   // request would target the wrong host.
-  const url = new URL("http://placeholder/");
+  // The WHATWG URL setters silently no-op when the value is rejected
+  // (e.g. `[::::]` matches HOSTNAME_RE but is not a valid IPv6 literal,
+  // so `url.hostname` stays as the sentinel). Build with a sentinel and
+  // assert the setters actually mutated it before returning, so fetchOnce
+  // can't ship a request at the wrong host. The sentinel is a name that
+  // HOSTNAME_RE rejects, so a legitimate host can never collide with it.
+  const HOSTNAME_SENTINEL = "placeholder.invalid";
+  const PORT_SENTINEL = "1";
+  const url = new URL(`http://${HOSTNAME_SENTINEL}:${PORT_SENTINEL}/`);
   url.hostname = config.host;
+  if (url.hostname === HOSTNAME_SENTINEL) {
+    throw new ClickHouseError(
+      `Invalid ClickHouse host ${JSON.stringify(config.host)}: rejected by URL parser`,
+      0,
+    );
+  }
   url.port = String(config.port);
+  if (url.port !== String(config.port)) {
+    throw new ClickHouseError(
+      `Invalid ClickHouse port ${config.port}: rejected by URL parser`,
+      0,
+    );
+  }
   url.pathname = "/";
   url.searchParams.set("database", config.database);
   return url.toString();

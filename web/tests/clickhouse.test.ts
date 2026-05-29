@@ -51,4 +51,35 @@ describe("buildEndpointUrl", () => {
       }),
     ).toThrow(ClickHouseError);
   });
+
+  it("rejects malformed IPv6 literals the URL parser silently no-ops", () => {
+    // Regression: `[::::]` matches HOSTNAME_RE but the WHATWG URL setter
+    // rejects it and leaves the sentinel hostname in place, so an earlier
+    // impl would ship a request at the wrong host. Now caught at build.
+    expect(() =>
+      buildEndpointUrl({
+        host: "[::::]",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      }),
+    ).toThrow(ClickHouseError);
+  });
+
+  it("rejects out-of-range ports the URL parser silently drops", () => {
+    // Regression: port 65536 passes the local integer check but the URL
+    // setter rejects it and drops the port (defaulting to scheme default
+    // 80). Catch the silent no-op at the build step instead of shipping
+    // a query at the wrong port.
+    expect(() =>
+      buildEndpointUrl({
+        host: "localhost",
+        port: 65536,
+        database: "default",
+        username: "default",
+        password: "",
+      }),
+    ).toThrow(ClickHouseError);
+  });
 });
