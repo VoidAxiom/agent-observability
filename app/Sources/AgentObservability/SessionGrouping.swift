@@ -187,14 +187,21 @@ enum SessionGrouping {
     private static func durationSeconds(from dates: [(row: SpanRowModel, date: Date)]) -> Double {
         guard
             let first = dates.min(by: { $0.date < $1.date })?.date,
-            let last = dates.max(by: { $0.date < $1.date })?.date,
-            first != .distantPast,
-            last != .distantPast
+            first != .distantPast
         else {
             return 0
         }
 
-        return max(0, last.timeIntervalSince(first))
+        let lastEnd = dates
+            .filter { $0.date != .distantPast }
+            .map { $0.date.addingTimeInterval(Double($0.row.Duration) / 1_000_000_000) }
+            .max()
+
+        guard let lastEnd else {
+            return 0
+        }
+
+        return max(0, lastEnd.timeIntervalSince(first))
     }
 
     private static func displayLabel(projectName: String, key: String) -> String {

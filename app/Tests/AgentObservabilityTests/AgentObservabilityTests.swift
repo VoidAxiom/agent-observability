@@ -153,6 +153,7 @@ import Testing
       "Timestamp": "2026-01-01T00:00:01.000000000",
       "ServiceName": "service",
       "StatusCode": "Ok",
+      "Duration": "5000000000",
       "AgentProject": "agent-project",
       "AgentSessionId": "agent-session",
       "AgentRunId": "run",
@@ -168,6 +169,7 @@ import Testing
     let decoded = rows[0]
 
     #expect(decoded.SessionId == "span-session")
+    #expect(decoded.Duration == 5_000_000_000)
     #expect(decoded.ProjectName == "project-name")
     #expect(decoded.ResourceAttributesRaw["project.name"] == "project-name")
     #expect(decoded.SpanAttributesRaw["session.id"] == "span-session")
@@ -184,6 +186,7 @@ import Testing
       "Timestamp": "2026-01-01T00:00:01.000000000",
       "ServiceName": "service",
       "StatusCode": null,
+      "Duration": null,
       "AgentProject": "agent-project",
       "AgentSessionId": "agent-session",
       "AgentRunId": "run",
@@ -198,6 +201,7 @@ import Testing
 
     #expect(rows.count == 1)
     #expect(rows.first?.StatusCode == "")
+    #expect(rows.first?.Duration == 0)
     #expect(rows.first?.SessionId == "")
     #expect(rows.first?.ProjectName == "")
     #expect(rows.first?.ResourceAttributesRaw == [:])
@@ -340,6 +344,46 @@ import Testing
     #expect(trace?.spans.map(\.depth) == [0, 1])
 }
 
+@Test func traceDurationUsesSpanDurationForSingleLongSpan() {
+    let sessions = SessionGrouping.groupSpans([
+        span(
+            spanId: "root",
+            timestamp: "2026-01-01T00:00:00.000000000",
+            duration: 5_000_000_000
+        )
+    ])
+
+    let trace = sessions.first?.traces.first
+
+    #expect(abs((trace?.durationSeconds ?? 0) - 5.0) < 0.001)
+}
+
+@Test func traceDurationAccountsForLongChildStartingBeforeLastChild() {
+    let sessions = SessionGrouping.groupSpans([
+        span(
+            spanId: "root",
+            timestamp: "2026-01-01T00:00:00.000000000",
+            duration: 0
+        ),
+        span(
+            spanId: "child-a",
+            parentSpanId: "root",
+            timestamp: "2026-01-01T00:00:01.000000000",
+            duration: 10_000_000_000
+        ),
+        span(
+            spanId: "child-b",
+            parentSpanId: "root",
+            timestamp: "2026-01-01T00:00:02.000000000",
+            duration: 1_000_000_000
+        )
+    ])
+
+    let trace = sessions.first?.traces.first
+
+    #expect(abs((trace?.durationSeconds ?? 0) - 11.0) < 0.001)
+}
+
 @Test func traceDisplayLabelFallsBackWhenSpanNameIsEmpty() {
     let traceId = "trace-empty-name"
     let sessions = SessionGrouping.groupSpans([
@@ -431,6 +475,7 @@ private func span(
     timestamp: String,
     serviceName: String = "service",
     statusCode: String = "",
+    duration: UInt64 = 0,
     agentProject: String = "project",
     agentSessionId: String = "session",
     agentRunId: String = "run",
@@ -447,6 +492,7 @@ private func span(
         Timestamp: timestamp,
         ServiceName: serviceName,
         StatusCode: statusCode,
+        Duration: duration,
         AgentProject: agentProject,
         AgentSessionId: agentSessionId,
         AgentRunId: agentRunId,

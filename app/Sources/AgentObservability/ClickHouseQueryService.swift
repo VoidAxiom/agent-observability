@@ -11,7 +11,8 @@ actor ClickHouseQueryService {
       ResourceAttributes['project.name']     AS ProjectName,
       ResourceAttributes                     AS ResourceAttributesRaw,
       SpanAttributes                         AS SpanAttributesRaw,
-      StatusCode
+      StatusCode,
+      Duration
     FROM otel_traces
     ORDER BY Timestamp DESC
     LIMIT 1000

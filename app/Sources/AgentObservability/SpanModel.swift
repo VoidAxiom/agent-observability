@@ -8,6 +8,7 @@ struct SpanRowModel: Codable, Equatable, Identifiable {
     let Timestamp: String
     let ServiceName: String
     let StatusCode: String
+    let Duration: UInt64
     let AgentProject: String
     let AgentSessionId: String
     let AgentRunId: String
@@ -27,6 +28,7 @@ struct SpanRowModel: Codable, Equatable, Identifiable {
         case Timestamp
         case ServiceName
         case StatusCode
+        case Duration
         case AgentProject
         case AgentSessionId
         case AgentRunId
@@ -51,6 +53,12 @@ extension SpanRowModel {
         Timestamp = try container.decodeIfPresent(String.self, forKey: .Timestamp) ?? ""
         ServiceName = try container.decodeIfPresent(String.self, forKey: .ServiceName) ?? ""
         StatusCode = try container.decodeIfPresent(String.self, forKey: .StatusCode) ?? ""
+        if let durationString = try? container.decodeIfPresent(String.self, forKey: .Duration),
+           let parsedDuration = UInt64(durationString) {
+            Duration = parsedDuration
+        } else {
+            Duration = (try? container.decodeIfPresent(UInt64.self, forKey: .Duration)) ?? 0
+        }
         AgentProject = try container.decodeIfPresent(String.self, forKey: .AgentProject) ?? ""
         AgentSessionId = try container.decodeIfPresent(String.self, forKey: .AgentSessionId) ?? ""
         AgentRunId = try container.decodeIfPresent(String.self, forKey: .AgentRunId) ?? ""
