@@ -56,10 +56,17 @@ function dominantFamilyAccent(session: SessionGroup): string {
   // already preorder-traversal-sorted from computeTreeOrder, so [0] is the
   // root). Mirrors SessionRow.swift's "dominant family of the most recent
   // trace" heuristic.
+  //
+  // Fall back to --accent-3 (non-magenta in every theme) when the head
+  // span isn't resolvable — a cycle-only trace whose rows were dropped by
+  // computeTreeOrder would otherwise default to magenta (--accent-1) via
+  // spanNameToFamily(''), colliding with the selection bar on a selected
+  // row. --accent-3 is "informational accent" in the theme system and is
+  // never the selection color in any of the 21 styles.
   const latestTrace = session.traces[0];
   const headSpanName = latestTrace?.spans[0]?.SpanName ?? "";
-  const family = spanNameToFamily(headSpanName);
-  return familyToAccentVar(family);
+  if (headSpanName === "") return "var(--accent-3)";
+  return familyToAccentVar(spanNameToFamily(headSpanName));
 }
 
 export function SessionSidebar({
@@ -84,13 +91,13 @@ export function SessionSidebar({
   return (
     <aside aria-label="Sessions" style={paneStyle}>
       <header style={paneHeaderStyle}>
-        <h2 style={paneHeaderTitleStyle}>SESSIONS</h2>
-        <span
-          style={paneHeaderHintStyle}
-          title="● active = amber pulse, idle = dim, error = red"
+        <h2
+          style={paneHeaderTitleStyle}
+          title="● active = pulsing accent · idle = family color · error = warning accent"
         >
-          // {sessions.length}
-        </span>
+          SESSIONS
+        </h2>
+        <span style={paneHeaderHintStyle}>// {sessions.length}</span>
       </header>
       {buckets.map((bucket) => (
         <section key={bucket.serviceName} style={bucketStyle}>
@@ -221,6 +228,7 @@ function StatusDot({ status, hasError, accent }: StatusDotProps) {
     <span
       aria-label={label}
       role="img"
+      title={label}
       style={{
         display: "inline-block",
         width: "8px",
@@ -257,13 +265,13 @@ const paneHeaderTitleStyle: CSSProperties = {
   letterSpacing: "0.12em",
   color: "var(--text)",
   textTransform: "uppercase",
+  cursor: "help",
 };
 
 const paneHeaderHintStyle: CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: "11px",
   color: "var(--text-muted)",
-  cursor: "help",
 };
 
 const bucketStyle: CSSProperties = {
