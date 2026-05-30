@@ -8,6 +8,7 @@
  */
 
 import { useState, type CSSProperties } from "react";
+import { parseTimestamp } from "../lib/grouping";
 import { Waterfall, type WaterfallProps } from "./Waterfall";
 
 export interface WaterfallShellProps extends WaterfallProps {
@@ -17,13 +18,21 @@ export interface WaterfallShellProps extends WaterfallProps {
   onCollapsedChange?: (collapsed: boolean) => void;
 }
 
+/*
+ * Compute the trace duration the chip prints. MUST use the same
+ * parseTimestamp helper Waterfall.buildLayout uses so the chip and the
+ * bars agree on what "the trace" looks like — raw Date.parse rejects
+ * the ClickHouse forms parseTimestamp accepts (space separator,
+ * 9-digit fractional seconds), which would silently print "0s" in the
+ * chip above a real 30-second waterfall.
+ */
 function formatChipDuration(spans: WaterfallProps["spans"]): string {
   if (spans.length === 0) return "0s";
   let earliest = Number.POSITIVE_INFINITY;
   let latest = Number.NEGATIVE_INFINITY;
   for (const s of spans) {
-    const t = Date.parse(s.Timestamp);
-    if (!Number.isFinite(t)) continue;
+    const t = parseTimestamp(s.Timestamp);
+    if (t === null) continue;
     const end = t + s.Duration / 1_000_000;
     if (t < earliest) earliest = t;
     if (end > latest) latest = end;

@@ -64,10 +64,20 @@ function Shell() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  const visibleSessions = useMemo<SessionGroup[]>(
-    () => (tab === "live" ? filterActive(sessions, nowMs) : sessions),
-    [tab, sessions, nowMs],
+  // Compute the active subset ONCE per tick and derive both
+  // visibleSessions and the header active-count from it — the prior
+  // version called filterActive three times per render (memo + header
+  // subtitle + tabs counter), re-walking sessions O(N) twice for free.
+  const activeSessions = useMemo<SessionGroup[]>(
+    () => filterActive(sessions, nowMs),
+    [sessions, nowMs],
   );
+  const visibleSessions = useMemo<SessionGroup[]>(
+    () => (tab === "live" ? activeSessions : sessions),
+    [tab, activeSessions, sessions],
+  );
+  const activeCount = activeSessions.length;
+  const totalCount = sessions.length;
 
   // Reconcile selection against the VISIBLE sessions set so when the user
   // switches Live → History (or vice versa) we don't keep a selection that
@@ -206,14 +216,14 @@ function Shell() {
       <header style={headerStyle}>
         <div style={titleColumnStyle}>
           <h1 style={titleStyle}>agent-observability</h1>
-          <p style={subtitleStyle}>{buildSubtitle({ loading, error, tab, activeCount: filterActive(sessions, nowMs).length, totalCount: sessions.length })}</p>
+          <p style={subtitleStyle}>{buildSubtitle({ loading, error, tab, activeCount, totalCount })}</p>
         </div>
         <div style={headerControlsStyle}>
           <LiveHistoryTabs
             active={tab}
             onChange={onTabChange}
-            activeCount={filterActive(sessions, nowMs).length}
-            totalCount={sessions.length}
+            activeCount={activeCount}
+            totalCount={totalCount}
           />
           <ThemePicker />
         </div>

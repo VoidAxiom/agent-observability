@@ -30,7 +30,15 @@ export interface CollapsibleTraceListProps {
 }
 
 function traceAccent(trace: TraceGroup): string {
+  // Mirror SessionSidebar.dominantFamilyAccent: spanNameToFamily('')
+  // returns 'claude_code.tool' which maps to --accent-1 (magenta, the
+  // reserved selection color). A cycle-only trace or any row dropped by
+  // computeTreeOrder would therefore paint a magenta border colliding
+  // with the 2px magenta selection bar — the user can't tell whether
+  // the trace is selected or just has no head. Fall back to --accent-3
+  // (informational accent, never the selection color in any theme).
   const headSpanName = trace.spans[0]?.SpanName ?? "";
+  if (headSpanName === "") return "var(--accent-3)";
   return familyToAccentVar(spanNameToFamily(headSpanName));
 }
 

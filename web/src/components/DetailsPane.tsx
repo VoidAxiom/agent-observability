@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Copy } from "lucide-react";
 import type { SessionGroup, SpanRow, TraceGroup } from "../lib/grouping";
+import { rowHasError } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
 import {
   groupAttributes,
@@ -182,10 +183,12 @@ function TraceDetails({ trace }: TraceDetailsProps) {
     }
     return Array.from(set);
   }, [trace.spans]);
-  const errorCount = trace.spans.reduce(
-    (n, s) => (s.StatusCode.toUpperCase() === "ERROR" ? n + 1 : n),
-    0,
-  );
+  // Use the canonical rowHasError predicate (4 shapes: StatusCode,
+  // merged otel.status_code, error attr, exception.* keys) so this
+  // count agrees with session.hasError / trace.hasError — a span that
+  // sets exception.message but UNSET StatusCode would otherwise show as
+  // errors:0 here while the sidebar marks the row as failing.
+  const errorCount = trace.spans.reduce((n, s) => (rowHasError(s) ? n + 1 : n), 0);
   const rootName = trace.spans[0]?.SpanName ?? trace.displayLabel;
 
   const durationDisplay = trace.durationSeconds < 1

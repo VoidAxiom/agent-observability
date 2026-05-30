@@ -273,6 +273,50 @@ describe("DetailsPane — TRACE mode", () => {
     expect(container.textContent).toContain("services");
     expect(container.textContent).toContain("errors");
   });
+
+  it("errorCount uses rowHasError (counts exception.* keys + error attr, not just StatusCode='ERROR')", () => {
+    const t = trace({
+      id: "trace-E",
+      spans: [
+        // 1: classic StatusCode=ERROR
+        span({ TraceId: "trace-E", SpanId: "a", StatusCode: "ERROR" }),
+        // 2: error via merged otel.status_code attribute (UNSET StatusCode)
+        span({
+          TraceId: "trace-E",
+          SpanId: "b",
+          StatusCode: "",
+          SpanAttributesRaw: { "otel.status_code": "ERROR" },
+        }),
+        // 3: error via exception.message key (UNSET StatusCode)
+        span({
+          TraceId: "trace-E",
+          SpanId: "c",
+          StatusCode: "",
+          SpanAttributesRaw: { "exception.message": "timeout" },
+        }),
+        // 4: error via plain `error=true` attr
+        span({
+          TraceId: "trace-E",
+          SpanId: "d",
+          StatusCode: "",
+          SpanAttributesRaw: { error: "true" },
+        }),
+        // 5: NOT an error — sanity baseline
+        span({ TraceId: "trace-E", SpanId: "e", StatusCode: "OK" }),
+      ],
+    });
+    const { container } = render(<DetailsPane span={null} trace={t} session={null} nowMs={0} />);
+    // Find the errors mini-stat: a value pair whose label is "// errors".
+    const labels = container.querySelectorAll("span");
+    let errorsValue: string | null = null;
+    labels.forEach((label) => {
+      if (label.textContent === "// errors" && label.previousElementSibling) {
+        errorsValue = label.previousElementSibling.textContent;
+      }
+    });
+    // 4 of the 5 spans are errors per rowHasError; the OK span is the baseline.
+    expect(errorsValue).toBe("4");
+  });
 });
 
 describe("DetailsPane — SESSION mode", () => {

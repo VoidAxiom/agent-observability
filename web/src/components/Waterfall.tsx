@@ -263,11 +263,26 @@ function buildLayout(
     const family = spanNameToFamily(span.SpanName);
     const accent = familyToAccentVar(family);
     const rawX = (startMs - minStart) * scale;
-    const rawWidth = Math.max(MIN_BAR_WIDTH, (span.Duration / 1_000_000) * scale);
-    // Clamp X so the MIN_BAR_WIDTH floor can't push the right edge past
-    // the inner axis (a near-trace-end sub-microsecond span at x=799.96
-    // width=1 would otherwise overflow into RIGHT_PAD or the viewBox).
-    const clampedX = Math.min(rawX, Math.max(0, innerWidth - rawWidth));
+    const naturalWidth = (span.Duration / 1_000_000) * scale;
+    const rawWidth = Math.max(MIN_BAR_WIDTH, naturalWidth);
+    // Two distinct overflow cases — handle them differently so the
+    // bar's X never lies about when the span started:
+    //
+    //  1. Tiny natural width (< MIN_BAR_WIDTH) at trace-end → the
+    //     MIN_BAR_WIDTH floor would push the right edge past the inner
+    //     axis. Shift X left enough to fit the 1px floor. Original X
+    //     bug-budget here was already 1px.
+    //  2. Wide natural width whose right edge exceeds innerWidth →
+    //     DON'T shift X (would falsify the bar's start). Cap width to
+    //     fit the axis instead; the right edge clamps, the left edge
+    //     stays aligned with the TimeAxis tick.
+    let clampedX = rawX;
+    let visibleWidth = rawWidth;
+    if (naturalWidth < MIN_BAR_WIDTH && rawX + rawWidth > innerWidth) {
+      clampedX = Math.max(0, innerWidth - rawWidth);
+    } else if (rawX + rawWidth > innerWidth) {
+      visibleWidth = Math.max(MIN_BAR_WIDTH, innerWidth - rawX);
+    }
     const endMs = startMs + span.Duration / 1_000_000;
     const isRunning =
       isStatusUnset(span.StatusCode) && endMs > nowMs - 1000;
@@ -277,7 +292,7 @@ function buildLayout(
       rowIndex: index,
       x: LEFT_GUTTER + clampedX,
       y: TIME_AXIS_HEIGHT + index * ROW_HEIGHT + BAR_Y_OFFSET,
-      width: rawWidth,
+      width: visibleWidth,
       family,
       accent,
       ancestors: ancestorChain.get(id) ?? new Set(),
