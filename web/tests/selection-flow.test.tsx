@@ -228,6 +228,60 @@ describe("App selection flow", () => {
     ).toBe("true");
   });
 
+  it("re-clicking the currently-selected session preserves the trace+span pick", () => {
+    setMock(fixtureRows());
+    render(<App />);
+    // Drill into a specific trace + span beyond the auto-promoted defaults.
+    const traceButtons = document.querySelectorAll(
+      "[data-trace-id]",
+    ) as NodeListOf<HTMLButtonElement>;
+    fireEvent.click(traceButtons[1]!); // second trace
+    const spanButtons = document.querySelectorAll(
+      "[data-span-id]",
+    ) as NodeListOf<HTMLButtonElement>;
+    fireEvent.click(spanButtons[3]!); // deep span
+
+    const heldTraceId = traceButtons[1]!.getAttribute("data-trace-id");
+    const heldSpanId = spanButtons[3]!.getAttribute("data-span-id");
+
+    const selectedSession = document.querySelector(
+      '[data-session-id][data-selected="true"]',
+    ) as HTMLButtonElement;
+    fireEvent.click(selectedSession);
+
+    expect(
+      document
+        .querySelector(`[data-trace-id="${heldTraceId}"]`)
+        ?.getAttribute("data-selected"),
+    ).toBe("true");
+    expect(
+      document
+        .querySelector(`[data-span-id="${heldSpanId}"]`)
+        ?.getAttribute("data-selected"),
+    ).toBe("true");
+  });
+
+  it("re-clicking the currently-selected trace preserves the span pick", () => {
+    setMock(fixtureRows());
+    render(<App />);
+    const spanButtons = document.querySelectorAll(
+      "[data-span-id]",
+    ) as NodeListOf<HTMLButtonElement>;
+    fireEvent.click(spanButtons[2]!);
+    const heldSpanId = spanButtons[2]!.getAttribute("data-span-id");
+
+    const selectedTrace = document.querySelector(
+      '[data-trace-id][data-selected="true"]',
+    ) as HTMLButtonElement;
+    fireEvent.click(selectedTrace);
+
+    expect(
+      document
+        .querySelector(`[data-span-id="${heldSpanId}"]`)
+        ?.getAttribute("data-selected"),
+    ).toBe("true");
+  });
+
   it("removing the selected session promotes the next-best deterministically", () => {
     setMock(fixtureRows());
     const { rerender } = render(<App />);

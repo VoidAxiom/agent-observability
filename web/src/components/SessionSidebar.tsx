@@ -200,7 +200,12 @@ function StatusDot({ status, hasError, accent }: StatusDotProps) {
   let animation: string | undefined;
   let label: string;
   if (hasError) {
-    color = "var(--accent-1)";
+    // Magenta (--accent-1) is reserved for selection; reusing it for the
+    // error dot collides with the selection bar on a selected error row.
+    // --accent-2 is the per-theme warn/secondary slot (orange/yellow in
+    // most themes, purple in neon-tokyo) — visually distinct from the
+    // magenta selection bar while staying alarm-coded across themes.
+    color = "var(--accent-2)";
     animation = "voi-error-strobe 0.6s ease-out 1";
     label = "error";
   } else if (status === "active") {

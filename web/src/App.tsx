@@ -93,16 +93,23 @@ function Shell() {
     if (nextSpanId !== selectedSpanId) setSelectedSpanId(nextSpanId);
   }, [sessions, selectedSessionId, selectedTraceId, selectedSpanId]);
 
+  // Re-clicking the currently-selected session/trace MUST be idempotent —
+  // otherwise the reconcile effect promotes descendants to first-of-list and
+  // silently drops the user's deeper pick. Only reset descendants when the
+  // selection actually changes.
   const onSelectSession = (id: string) => {
+    if (id === selectedSessionId) return;
     setSelectedSessionId(id);
     setSelectedTraceId(null);
     setSelectedSpanId(null);
   };
   const onSelectTrace = (id: string) => {
+    if (id === selectedTraceId) return;
     setSelectedTraceId(id);
     setSelectedSpanId(null);
   };
   const onSelectSpan = (id: string) => {
+    if (id === selectedSpanId) return;
     setSelectedSpanId(id);
   };
 

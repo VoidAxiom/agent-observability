@@ -134,6 +134,24 @@ describe("SessionSidebar", () => {
     expect(screen.getByLabelText("error")).toBeDefined();
   });
 
+  it("error session dot uses --accent-2 (NOT magenta --accent-1) to avoid colliding with selection bar", () => {
+    const sessions = [
+      makeSession({ id: "s1", serviceName: "claude-code", hasError: true }),
+    ];
+    render(
+      <SessionSidebar
+        sessions={sessions}
+        selectedSessionId="s1"
+        onSelect={() => undefined}
+        nowMs={Date.now()}
+      />,
+    );
+    const dot = screen.getByLabelText("error") as HTMLElement;
+    const inline = dot.getAttribute("style") ?? "";
+    expect(inline).toContain("var(--accent-2)");
+    expect(inline).not.toContain("var(--accent-1)");
+  });
+
   it("invokes onSelect with the session id when row clicked", () => {
     const onSelect = vi.fn();
     const sessions = [makeSession({ id: "abc", serviceName: "claude-code" })];

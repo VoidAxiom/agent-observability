@@ -5,8 +5,6 @@ import {
   type SpanFamily,
 } from "../lib/spanFamily";
 
-export type { SpanFamily } from "../lib/spanFamily";
-
 export interface SignatureSpanCardProps {
   name: string;
   family: SpanFamily;
