@@ -146,6 +146,34 @@ function Shell() {
     selectedSpanId,
   ]);
 
+  // Prune expandedTraceIds against the trace IDs currently present in
+  // ALL sessions (not just visibleSessions — History switches the filter
+  // off and shouldn't drop expansion state for stale-but-still-listed
+  // traces). Without this the Set accumulates dead keys for the lifetime
+  // of a long-running tab, AND a re-emitted trace_id (fixture replay,
+  // idempotent rerun) would auto-expand without the user clicking the
+  // chevron — silently violating uncontrolled-collapse expectations.
+  useEffect(() => {
+    if (expandedTraceIds.size === 0) return;
+    const live = new Set<string>();
+    for (const s of sessions) for (const t of s.traces) live.add(t.id);
+    let stale = false;
+    for (const id of expandedTraceIds) {
+      if (!live.has(id)) {
+        stale = true;
+        break;
+      }
+    }
+    if (!stale) return;
+    setExpandedTraceIds((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (live.has(id)) next.add(id);
+      }
+      return next;
+    });
+  }, [sessions, expandedTraceIds]);
+
   const onSelectSession = useCallback(
     (id: string) => {
       if (id === selectedSessionId) return;

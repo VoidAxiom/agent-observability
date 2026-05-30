@@ -116,10 +116,12 @@ describe("CollapsibleTraceList", () => {
     expect(depths).toContain("0");
     expect(depths).toContain("2");
 
-    // Subagent span carries the badge element
+    // Subagent span carries the badge element. The label IS the upper-
+    // cased subagent_type (NOT a generic "[SUBAGENT]" literal) so it
+    // agrees with the waterfall bar suffix label.
     const badge = container.querySelector('[data-subagent-badge="true"]');
     expect(badge).not.toBeNull();
-    expect(badge?.textContent).toBe("[SUBAGENT]");
+    expect(badge?.textContent).toBe("[BASH]");
 
     // Tooltip carries the agent metadata
     const tooltip = badge?.getAttribute("data-tooltip") ?? "";

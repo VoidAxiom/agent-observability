@@ -178,9 +178,16 @@ export function Waterfall({
               selected={bar.spanId === selectedSpanId}
               hovered={bar.spanId === hoveredSpanId}
               dimmed={
+                // Skip the dim entirely when the hovered span has no
+                // ancestors (i.e. the root). The old behavior dimmed
+                // every other bar in the trace because the "is
+                // ancestor of hover?" predicate is vacuously false
+                // for a root's empty ancestor set — hovering the top
+                // of the call tree should reveal it, not hide it.
                 hoveredSpanId !== null &&
                 hoveredSpanId !== bar.spanId &&
                 ancestorSet !== null &&
+                ancestorSet.size > 0 &&
                 !ancestorSet.has(bar.spanId)
               }
               ancestorHighlight={
@@ -576,6 +583,14 @@ function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
   const pathRefs = useRef<Map<string, SVGPathElement>>(new Map());
   const markCelebrated = useCrossProcessStore((s) => s.markCelebrated);
   const hydrate = useCrossProcessStore((s) => s.hydrate);
+  // celebratedSet drives the static data-state attribute in the render
+  // path. The SWEEP effect must NOT depend on it — otherwise the first
+  // edge's onComplete (which calls markCelebrated) flips the set
+  // identity, the effect cleanup .kill()s every other in-flight tween,
+  // and the partially-drawn edges freeze at whatever stroke-dashoffset
+  // they happened to reach. Inside the effect we read the latest set
+  // via useCrossProcessStore.getState() so the sweep is decoupled from
+  // store churn entirely.
   const celebratedSet = useCrossProcessStore((s) => s.celebrated);
   const hydrated = useCrossProcessStore((s) => s.hydrated);
 
@@ -601,10 +616,14 @@ function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     const activeTweens: gsap.core.Tween[] = [];
+    // Read the persisted set ONCE at effect start; subsequent
+    // markCelebrated calls inside this effect run won't re-trigger the
+    // effect because celebratedSet isn't in the deps array.
+    const persistedAtStart = useCrossProcessStore.getState().celebrated;
 
     for (const edge of edges) {
       if (sweptThisMountRef.current.has(edge.key)) continue;
-      if (celebratedSet.has(edge.key)) {
+      if (persistedAtStart.has(edge.key)) {
         sweptThisMountRef.current.add(edge.key);
         continue;
       }
@@ -661,7 +680,11 @@ function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
         tween.kill();
       }
     };
-  }, [edges, celebratedSet, hydrated, markCelebrated]);
+    // celebratedSet deliberately omitted from deps — see the comment on
+    // the selector above. The effect reads the persisted set via
+    // getState() so onComplete-triggered store updates don't re-run
+    // (and prematurely .kill()) sibling tweens.
+  }, [edges, hydrated, markCelebrated]);
 
   return (
     <g aria-hidden="true">

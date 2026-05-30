@@ -245,7 +245,7 @@ function SpanRowItem({ span, selected, onSelect }: SpanRowItemProps) {
             data-tooltip={tooltipText}
             style={{ ...subagentBadgeStyle, color: accent, borderColor: accent }}
           >
-            [SUBAGENT]
+            {`[${subType.toUpperCase()}]`}
           </span>
         ) : null}
       </button>
