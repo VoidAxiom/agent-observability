@@ -8,12 +8,9 @@ help:
 	@echo "collector-up          VOI-307"
 	@echo "collector-down        VOI-307"
 	@echo "sdk-test              VOI-308"
-	@echo "app-build             VOI-309"
-	@echo "app-run               VOI-309"
-	@echo "app-test              VOI-314"
 	@echo "demo                  VOI-310 (M0 acceptance gate)"
 
-.PHONY: help clickhouse-up clickhouse-down clickhouse-migrate collector-up collector-down sdk-test app-build app-run app-test demo
+.PHONY: help clickhouse-up clickhouse-down clickhouse-migrate collector-up collector-down sdk-test demo
 
 clickhouse-up:
 	@test -f .env || cp .env.example .env
@@ -48,26 +45,11 @@ sdk-test:
 	cd sdk && uv pip install -e ".[dev]"
 	cd sdk && uv run pytest -q .
 
-app-build:
-	cd app && swift build -c release
-
-app-run:
-	cd app && swift run -c release AgentObservability
-
-# Run app's Swift Testing suite. Two flag pairs are needed on
-# CommandLineTools-only hosts (no Xcode.app):
-#   -Xswiftc -F <path>  — lets the compiler find Testing.swiftmodule
-#   -Xlinker -rpath -Xlinker <path>  — bakes the runtime search path
-#                                       into the test binary so dyld
-#                                       can load Testing.framework
-# SwiftPM auto-derives an internal runner.swift whose
-# `#if canImport(Testing)` gate doesn't see flags scoped to manifest-
-# declared targets via Package.swift unsafeFlags, so the recipe carries
-# them at the CLI instead. Keeps Package.swift clean.
-app-test:
-	cd app && swift test \
-		-Xswiftc -F -Xswiftc /Library/Developer/CommandLineTools/Library/Developer/Frameworks \
-		-Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/Frameworks
+# Web UI (VOI-344+) — informational; no make target yet.
+# Dev server (port 5174):
+#   cd web && pnpm install && pnpm dev
+# Tests:
+#   cd web && pnpm test --run
 
 demo:
 	bash scripts/demo-smoke.sh
