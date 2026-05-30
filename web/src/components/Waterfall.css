@@ -1,0 +1,240 @@
+/*
+ * Waterfall.css — per-style adaptation for the SVG waterfall.
+ *
+ * Glow ramp via filter: drop-shadow on rect. The ramp uses currentColor
+ * so the same class works across all family colors — set color on the
+ * rect, the drop-shadow inherits it. Hover-strong / ancestor-medium /
+ * default-soft per cyberpunk discipline § "Waterfall".
+ *
+ * Per-style overrides:
+ *  - brut: no glow, no motion. Hard borders only.
+ *  - editorial: no glow. Hairline rects only.
+ *  - terminal: stepped pulse animation.
+ *  - liquid: skew-pulse for running spans.
+ *  - holo: hue-rotate on running spans.
+ *
+ * GPU-safe properties only (opacity, filter, transform). No layout reflow.
+ */
+
+.voi-waterfall {
+  display: block;
+  width: 100%;
+}
+
+.voi-waterfall-bar {
+  cursor: pointer;
+  transition: opacity 180ms ease-out, filter 180ms ease-out;
+}
+
+.voi-waterfall-bar[data-dimmed="true"] {
+  opacity: 0.4;
+}
+
+/* Synthetic "no-timestamp" bars: visually distinct so the operator can
+ * tell at a glance that the bar's geometry is a fallback (the source
+ * span had an unparseable Timestamp). Reduced opacity + dashed border
+ * effect via filter. Codex round-4 P1 2026-05-30. */
+g[data-no-timestamp="true"] > .voi-waterfall-bar {
+  opacity: 0.5;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  fill-opacity: 0.4;
+}
+
+.voi-waterfall-bar[data-glow="soft"] {
+  filter: drop-shadow(0 0 2px currentColor);
+}
+
+.voi-waterfall-bar[data-glow="medium"] {
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.voi-waterfall-bar[data-glow="strong"] {
+  filter: drop-shadow(0 0 9px currentColor);
+}
+
+.voi-waterfall-bar[data-running="true"] {
+  animation: voi-running-pulse 1.5s ease-in-out infinite;
+}
+
+/* Dimmed wins over running-pulse. The pulse keyframes animate opacity
+ * 0.7↔1.0, which overrides the static opacity:0.4 set by data-dimmed.
+ * Without this override, a running sibling that the user hovered away
+ * from keeps pulsing brightly while the hovered ancestor chain stays
+ * highlighted — undermining the hover-to-focus affordance. Codex
+ * round-4 P1 2026-05-30. */
+.voi-waterfall-bar[data-running="true"][data-dimmed="true"] {
+  animation: none;
+  opacity: 0.4;
+}
+
+@keyframes voi-running-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+.voi-waterfall-label {
+  /* fill is set inline via bestContrastTextOn — DO NOT set a default here,
+   * the inline style is the source of truth for contrast against the bar's
+   * family color. */
+  font-family: var(--font-mono);
+  font-size: 11px;
+  pointer-events: none;
+  /* NO glow on labels per cyberpunk § "Pitfalls: Label glow". */
+  filter: none;
+}
+
+.voi-waterfall-subagent {
+  /* Subagent suffix tag — same family color as the bar (set inline), smaller
+   * size, reduced opacity so it doesn't compete with the main label. */
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  pointer-events: none;
+  filter: none;
+}
+
+.voi-waterfall-tick {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+  opacity: 0.4;
+}
+
+.voi-waterfall-tick--major {
+  opacity: 0.8;
+}
+
+.voi-waterfall-tick-label {
+  fill: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.voi-waterfall-selection-edge {
+  fill: var(--accent-1);
+  pointer-events: none;
+}
+
+/* Cross-process sweep + permanent ligature. */
+.voi-cross-edge {
+  stroke: var(--accent-1);
+  fill: none;
+  pointer-events: none;
+}
+
+.voi-cross-edge[data-state="sweep"] {
+  stroke-width: 2;
+  opacity: 1;
+}
+
+.voi-cross-edge[data-state="settled"] {
+  stroke-width: 1;
+  opacity: 0.6;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+/* ============================================================
+ * Per-style overrides.
+ * ============================================================ */
+
+/* Brutalist: no glow, no motion. */
+[data-style="brut"] .voi-waterfall-bar,
+[data-style="brut"] .voi-waterfall-bar[data-glow="soft"],
+[data-style="brut"] .voi-waterfall-bar[data-glow="medium"],
+[data-style="brut"] .voi-waterfall-bar[data-glow="strong"] {
+  filter: none;
+}
+
+[data-style="brut"] .voi-waterfall-bar[data-running="true"],
+[data-style="editorial"] .voi-waterfall-bar[data-running="true"] {
+  animation: none;
+  opacity: 0.85;
+}
+
+[data-style="brut"] .voi-cross-edge[data-state="settled"] {
+  filter: none;
+}
+
+/* Editorial: no glow, hairline borders implicit via stroke. */
+[data-style="editorial"] .voi-waterfall-bar,
+[data-style="editorial"] .voi-waterfall-bar[data-glow="soft"],
+[data-style="editorial"] .voi-waterfall-bar[data-glow="medium"],
+[data-style="editorial"] .voi-waterfall-bar[data-glow="strong"] {
+  filter: none;
+  stroke: var(--text);
+  stroke-width: 0.5;
+}
+
+[data-style="editorial"] .voi-cross-edge[data-state="settled"] {
+  filter: none;
+}
+
+/* Terminal: stepped pulse. */
+[data-style="terminal"] .voi-waterfall-bar[data-running="true"] {
+  animation: voi-running-pulse-stepped 1.5s steps(3) infinite;
+}
+
+@keyframes voi-running-pulse-stepped {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+/* Liquid: skew-based wave morph. */
+[data-style="liquid"] .voi-waterfall-bar[data-running="true"] {
+  animation: voi-running-wave 1.8s ease-in-out infinite;
+  transform-origin: left center;
+  transform-box: fill-box;
+}
+
+@keyframes voi-running-wave {
+  0%, 100% { opacity: 0.75; transform: skewY(0deg); }
+  50% { opacity: 1; transform: skewY(1.5deg); }
+}
+
+/* Holographic: hue-rotate on running spans. */
+[data-style="holo"] .voi-waterfall-bar[data-running="true"] {
+  animation: voi-running-hue 3s linear infinite;
+}
+
+@keyframes voi-running-hue {
+  0% { opacity: 0.85; filter: drop-shadow(0 0 6px currentColor) hue-rotate(0deg); }
+  50% { opacity: 1; filter: drop-shadow(0 0 6px currentColor) hue-rotate(30deg); }
+  100% { opacity: 0.85; filter: drop-shadow(0 0 6px currentColor) hue-rotate(0deg); }
+}
+
+/* Dimmed wins over EVERY per-style running animation. Each running
+ * variant (default pulse / terminal stepped / liquid wave / holo hue)
+ * animates opacity through the 0.7-1.0 range, which would otherwise
+ * override the static opacity:0.4 from data-dimmed. Match the per-style
+ * specificity here so the dim affordance always wins. Liquid also gets
+ * skewY zeroed; holo also gets its filter dropped. */
+[data-style="terminal"] .voi-waterfall-bar[data-running="true"][data-dimmed="true"],
+[data-style="liquid"] .voi-waterfall-bar[data-running="true"][data-dimmed="true"],
+[data-style="holo"] .voi-waterfall-bar[data-running="true"][data-dimmed="true"] {
+  animation: none;
+  opacity: 0.4;
+}
+[data-style="liquid"] .voi-waterfall-bar[data-running="true"][data-dimmed="true"] {
+  transform: none;
+}
+[data-style="holo"] .voi-waterfall-bar[data-running="true"][data-dimmed="true"] {
+  filter: none;
+}
+
+/* Honor reduced-motion globally — also overrides the per-style anims. */
+@media (prefers-reduced-motion: reduce) {
+  .voi-waterfall-bar[data-running="true"],
+  [data-style="terminal"] .voi-waterfall-bar[data-running="true"],
+  [data-style="liquid"] .voi-waterfall-bar[data-running="true"],
+  [data-style="holo"] .voi-waterfall-bar[data-running="true"] {
+    animation: none;
+    opacity: 0.85;
+  }
+  .voi-waterfall-bar {
+    transition: none;
+  }
+}

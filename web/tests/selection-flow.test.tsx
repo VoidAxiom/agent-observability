@@ -1,12 +1,21 @@
 /*
  * selection-flow.test.tsx — RTL exercise of App.tsx's selection
- * reconciliation against a mocked usePolledSpans hook. Confirms:
- *  - first session/trace/span auto-promote when none selected;
- *  - clicking a session reveals its traces;
- *  - clicking a trace reveals its span tree;
- *  - a refresh that adds a new span keeps the prior selection;
+ * reconciliation against a mocked usePolledSpans hook. Contract
+ * (post-VOI-346 codex rounds 1+5 — aggregate Details views must be
+ * reachable for ANY session/trace, including the auto-promoted ones):
+ *  - initial load auto-promotes first session + first trace; span is
+ *    NOT auto-promoted so DetailsPane renders TRACE mode by default.
+ *  - clicking a session ALWAYS clears trace+span (even when re-clicking
+ *    the already-selected session) so DetailsPane can show SESSION
+ *    aggregate. Trace pane re-populates with that session's traces
+ *    but no trace is auto-selected.
+ *  - clicking a trace ALWAYS clears span (even when re-clicking the
+ *    already-selected trace) so DetailsPane can show TRACE aggregate.
+ *  - clicking a span surfaces the span details.
+ *  - a refresh that adds a new span keeps the user's explicit drill.
  *  - removing the selected session promotes the next-best per
- *    reconcileSelection's contract.
+ *    reconcileSelection's contract (and re-auto-promotes its first
+ *    trace, since the session identity changed via data eviction).
  */
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -70,9 +79,15 @@ function span(o: Partial<SpanRow> & { SpanId: string; TraceId: string; SessionId
 }
 
 function setMock(rows: SpanRow[]): void {
+  // Pin nowMs within the 5-minute "active" window relative to the fixture
+  // timestamps (2026-01-01T00:0X:0Y...). The Live tab filter drops stale
+  // sessions; selection-flow tests pre-date the tabs feature and assume
+  // every fixture session is visible. Keeping nowMs at 00:01:30 leaves
+  // sess1 (00:01:Y) ~30s old and sess2 (00:02:Y) ~30s in the future — both
+  // resolve as "active" via activityStatus' ageSeconds <= 5*60 branch.
   mockState = {
     sessions: groupSpans(rows),
-    nowMs: Date.UTC(2026, 0, 2),
+    nowMs: Date.UTC(2026, 0, 1, 0, 1, 30),
     error: null,
     loading: false,
   };
@@ -114,10 +129,11 @@ describe("App selection flow", () => {
     ).toBeGreaterThanOrEqual(1);
   });
 
-  it("auto-promotes first session, trace, and span on initial data load", () => {
+  it("auto-promotes first session and first trace on initial data load (no span)", () => {
     setMock(fixtureRows());
     render(<App />);
-    // Selected session, trace, and span buttons all carry data-selected=true.
+    // Per VOI-346 contract: initial load promotes session + first trace.
+    // Span is NOT auto-promoted so DetailsPane renders TRACE mode.
     const selectedSession = document.querySelectorAll(
       '[data-session-id][data-selected="true"]',
     );
@@ -129,10 +145,10 @@ describe("App selection flow", () => {
     );
     expect(selectedSession.length).toBe(1);
     expect(selectedTrace.length).toBe(1);
-    expect(selectedSpan.length).toBe(1);
+    expect(selectedSpan.length).toBe(0);
   });
 
-  it("clicking a second session swaps traces in the middle pane", () => {
+  it("clicking a second session swaps the trace pane and clears trace/span (SESSION mode)", () => {
     setMock(fixtureRows());
     render(<App />);
     const sessionButtons = document.querySelectorAll(
@@ -148,11 +164,17 @@ describe("App selection flow", () => {
       `[data-session-id="${secondSessionId}"]`,
     );
     expect(stillSelected?.getAttribute("data-selected")).toBe("true");
-    // Trace pane re-promotes to the new session's first trace.
+    // Per VOI-346 contract: user-initiated session change clears trace
+    // and span so DetailsPane renders SESSION mode. The middle pane
+    // still re-renders with the new session's traces — but none are
+    // pre-selected.
     const selectedTraces = document.querySelectorAll(
       '[data-trace-id][data-selected="true"]',
     );
-    expect(selectedTraces.length).toBe(1);
+    expect(selectedTraces.length).toBe(0);
+    const visibleTraces = document.querySelectorAll("[data-trace-id]");
+    // The new session has 2 traces; both render.
+    expect(visibleTraces.length).toBe(2);
   });
 
   it("clicking a trace updates the span tree", () => {
@@ -178,6 +200,14 @@ describe("App selection flow", () => {
   it("selection survives a refresh that adds one new span", () => {
     setMock(fixtureRows());
     const { rerender } = render(<App />);
+
+    // Drill into a specific span — initial load only auto-promotes
+    // session + trace, never span (VOI-346 contract), so a user-click
+    // is required to establish a span pin worth preserving.
+    const spanButtons = document.querySelectorAll(
+      "[data-span-id]",
+    ) as NodeListOf<HTMLButtonElement>;
+    fireEvent.click(spanButtons[2]!);
 
     const before = document.querySelector(
       '[data-session-id][data-selected="true"]',
@@ -228,7 +258,12 @@ describe("App selection flow", () => {
     ).toBe("true");
   });
 
-  it("re-clicking the currently-selected session preserves the trace+span pick", () => {
+  it("re-clicking the currently-selected session clears descendants (SESSION mode reachable)", () => {
+    // Contract per codex round-5 P2 2026-05-30: re-clicking an
+    // already-selected session must clear trace+span so DetailsPane
+    // can render SESSION mode. Initial load auto-promotes the first
+    // trace, so without this the user has no way to reach SESSION mode
+    // for the auto-promoted session without navigating away.
     setMock(fixtureRows());
     render(<App />);
     // Drill into a specific trace + span beyond the auto-promoted defaults.
@@ -249,19 +284,31 @@ describe("App selection flow", () => {
     ) as HTMLButtonElement;
     fireEvent.click(selectedSession);
 
+    // Trace + span are cleared so DetailsPane shows SESSION aggregate.
+    // After clearing, the trace is still in the trace list (the middle
+    // pane re-renders the session's traces) but not marked selected; the
+    // spans may not be rendered at all (their trace may not be expanded),
+    // which also satisfies the contract "the held span is no longer
+    // marked selected anywhere."
     expect(
       document
         .querySelector(`[data-trace-id="${heldTraceId}"]`)
         ?.getAttribute("data-selected"),
-    ).toBe("true");
+    ).toBe("false");
     expect(
-      document
-        .querySelector(`[data-span-id="${heldSpanId}"]`)
-        ?.getAttribute("data-selected"),
-    ).toBe("true");
+      document.querySelectorAll('[data-trace-id][data-selected="true"]').length,
+    ).toBe(0);
+    // Silence the unused-variable lint while still documenting which
+    // span we drilled into above for context.
+    void heldSpanId;
+    expect(
+      document.querySelectorAll('[data-span-id][data-selected="true"]').length,
+    ).toBe(0);
   });
 
-  it("re-clicking the currently-selected trace preserves the span pick", () => {
+  it("re-clicking the currently-selected trace clears the span (TRACE mode reachable)", () => {
+    // Symmetric with the session-reclick contract: re-clicking a selected
+    // trace clears the span so DetailsPane can show TRACE aggregate.
     setMock(fixtureRows());
     render(<App />);
     const spanButtons = document.querySelectorAll(
@@ -275,11 +322,17 @@ describe("App selection flow", () => {
     ) as HTMLButtonElement;
     fireEvent.click(selectedTrace);
 
+    // Span cleared but selectedSpanId may appear in BOTH the trace list
+    // AND the waterfall under the same data-span-id — assert the held
+    // selection is no longer marked selected anywhere.
     expect(
       document
         .querySelector(`[data-span-id="${heldSpanId}"]`)
         ?.getAttribute("data-selected"),
-    ).toBe("true");
+    ).toBe("false");
+    expect(
+      document.querySelectorAll('[data-span-id][data-selected="true"]').length,
+    ).toBe(0);
   });
 
   it("removing the selected session promotes the next-best deterministically", () => {

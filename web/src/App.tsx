@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+} from "react";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { ThemePicker } from "./theme/ThemePicker";
 import { SessionSidebar } from "./components/SessionSidebar";
-import { TraceList } from "./components/TraceList";
-import { SpanTree } from "./components/SpanTree";
-import { InspectorPane } from "./components/InspectorPane";
+import { CollapsibleTraceList } from "./components/CollapsibleTraceList";
+import { WaterfallShell } from "./components/WaterfallShell";
+import { DetailsPane } from "./components/DetailsPane";
+import { LiveHistoryTabs, type TabKey } from "./components/LiveHistoryTabs";
 import { usePolledSpans } from "./lib/usePolledSpans";
 import {
   reconcileSelection,
@@ -13,6 +20,8 @@ import {
   type SpanRow,
   type TraceGroup,
 } from "./lib/grouping";
+import { filterActive } from "./lib/sessionsFilter";
+import "./app.css";
 
 export function App() {
   return (
@@ -22,19 +31,60 @@ export function App() {
   );
 }
 
+function readTabFromHash(): TabKey {
+  if (typeof window === "undefined") return "live";
+  const raw = window.location.hash.replace(/^#/, "").toLowerCase();
+  if (raw === "history") return "history";
+  return "live";
+}
+
 function Shell() {
   const { sessions, nowMs, error, loading } = usePolledSpans();
+  const [tab, setTab] = useState<TabKey>(() => readTabFromHash());
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     null,
   );
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
+  const [expandedTraceIds, setExpandedTraceIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [waterfallCollapsed, setWaterfallCollapsed] = useState<boolean>(false);
 
-  // Reconcile selection against each refresh; auto-promote first
-  // session/trace/span on initial data load so the UI is never empty when
-  // data exists.
+  // Keep the tab in sync with browser back/forward (the user may navigate
+  // via the URL bar). Hashchange fires when location.hash mutates from
+  // any source — including our own setter — so the comparison guards
+  // against a feedback loop.
   useEffect(() => {
-    if (sessions.length === 0) {
+    const onHashChange = () => {
+      const next = readTabFromHash();
+      setTab((cur) => (cur === next ? cur : next));
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  // Compute the active subset ONCE per tick and derive both
+  // visibleSessions and the header active-count from it — the prior
+  // version called filterActive three times per render (memo + header
+  // subtitle + tabs counter), re-walking sessions O(N) twice for free.
+  const activeSessions = useMemo<SessionGroup[]>(
+    () => filterActive(sessions, nowMs),
+    [sessions, nowMs],
+  );
+  const visibleSessions = useMemo<SessionGroup[]>(
+    () => (tab === "live" ? activeSessions : sessions),
+    [tab, activeSessions, sessions],
+  );
+  const activeCount = activeSessions.length;
+  const totalCount = sessions.length;
+
+  // Reconcile selection against the VISIBLE sessions set so when the user
+  // switches Live → History (or vice versa) we don't keep a selection that
+  // would render an "active" trace pane for a session that's hidden behind
+  // a filter.
+  useEffect(() => {
+    if (visibleSessions.length === 0) {
       if (selectedSessionId || selectedTraceId || selectedSpanId) {
         setSelectedSessionId(null);
         setSelectedTraceId(null);
@@ -44,7 +94,7 @@ function Shell() {
     }
 
     const reconciled = reconcileSelection(
-      sessions,
+      visibleSessions,
       selectedSessionId,
       selectedTraceId,
       selectedSpanId,
@@ -54,18 +104,48 @@ function Shell() {
     let nextTraceId = reconciled.selectedTraceId;
     let nextSpanId = reconciled.selectedSpanId;
 
+    // Session-level auto-promotion: when no valid session exists (initial
+    // load OR the prior session was evicted by data churn), fall back to
+    // visibleSessions[0]. The fallback clears trace/span only when the
+    // selected session actually changed — otherwise we'd nuke the user's
+    // existing trace/span pick on every reconcile tick.
     if (!nextSessionId) {
-      nextSessionId = sessions[0]?.id ?? null;
-      nextTraceId = null;
-      nextSpanId = null;
+      nextSessionId = visibleSessions[0]?.id ?? null;
+      if (nextSessionId !== selectedSessionId) {
+        nextTraceId = null;
+        nextSpanId = null;
+      }
     }
 
-    const activeSession = sessions.find((s) => s.id === nextSessionId) ?? null;
+    const activeSession =
+      visibleSessions.find((s) => s.id === nextSessionId) ?? null;
+    // Trace-level auto-promotion: ONLY when the session identity just
+    // changed (initial load, data-churn eviction, or the user clicked a
+    // different session). When the user clicks the SAME session and
+    // explicitly cleared trace/span via onSelectSession's contract
+    // (trace=null, span=null), the session is unchanged here — leave
+    // trace null so DetailsPane renders the SESSION aggregate. Without
+    // this guard, the user can never reach the trace/session aggregate
+    // views because the deepest item is always re-promoted (codex P2
+    // 2026-05-30).
+    // Trace-level auto-promotion. The earlier logic always auto-promoted
+    // the first trace whenever none was selected; that re-promoted the
+    // first trace after the user clicked a session to view its aggregate,
+    // making the SESSION mode of DetailsPane unreachable (codex P2
+    // 2026-05-30). New rule: auto-promote ONLY when (a) the session
+    // identity just changed (initial load / data-churn fall-back), or
+    // (b) the held trace ID got evicted by data churn (selectedTraceId
+    // was non-null on entry but reconcile nulled it). When the user
+    // explicitly cleared trace via onSelectSession on the SAME session,
+    // we leave trace null so DetailsPane renders SESSION mode.
+    const sessionJustChanged = nextSessionId !== selectedSessionId;
+    const traceWasEvicted =
+      selectedTraceId !== null && reconciled.selectedTraceId === null;
     if (activeSession) {
-      // If the trace selection is stale (e.g. removed) OR unset, promote
-      // the most-recent trace of the active session so the middle pane
-      // is never blank when traces exist.
-      if (!nextTraceId || !activeSession.traces.some((t) => t.id === nextTraceId)) {
+      const traceStillValid =
+        nextTraceId !== null &&
+        activeSession.traces.some((t) => t.id === nextTraceId);
+      if (!traceStillValid && (sessionJustChanged || traceWasEvicted)) {
         nextTraceId = activeSession.traces[0]?.id ?? null;
         nextSpanId = null;
       }
@@ -74,15 +154,19 @@ function Shell() {
       nextSpanId = null;
     }
 
+    // Span: never auto-promote. The trace aggregate is the more useful
+    // default view; the user clicks an individual span to drill in.
+    // If the held span ID becomes invalid (data eviction, user-cleared,
+    // or trace just changed), drop it — DetailsPane falls back to TRACE
+    // mode automatically.
     const activeTrace =
       activeSession?.traces.find((t) => t.id === nextTraceId) ?? null;
     if (activeTrace) {
-      if (
-        !nextSpanId ||
-        !activeTrace.spans.some((s) => spanRowId(s) === nextSpanId)
-      ) {
-        const firstSpan = activeTrace.spans[0];
-        nextSpanId = firstSpan ? spanRowId(firstSpan) : null;
+      const spanStillValid =
+        nextSpanId !== null &&
+        activeTrace.spans.some((s) => spanRowId(s) === nextSpanId);
+      if (!spanStillValid) {
+        nextSpanId = null;
       }
     } else {
       nextSpanId = null;
@@ -91,31 +175,100 @@ function Shell() {
     if (nextSessionId !== selectedSessionId) setSelectedSessionId(nextSessionId);
     if (nextTraceId !== selectedTraceId) setSelectedTraceId(nextTraceId);
     if (nextSpanId !== selectedSpanId) setSelectedSpanId(nextSpanId);
-  }, [sessions, selectedSessionId, selectedTraceId, selectedSpanId]);
+  }, [
+    visibleSessions,
+    selectedSessionId,
+    selectedTraceId,
+    selectedSpanId,
+  ]);
 
-  // Re-clicking the currently-selected session/trace MUST be idempotent —
-  // otherwise the reconcile effect promotes descendants to first-of-list and
-  // silently drops the user's deeper pick. Only reset descendants when the
-  // selection actually changes.
-  const onSelectSession = (id: string) => {
-    if (id === selectedSessionId) return;
-    setSelectedSessionId(id);
-    setSelectedTraceId(null);
-    setSelectedSpanId(null);
-  };
-  const onSelectTrace = (id: string) => {
-    if (id === selectedTraceId) return;
-    setSelectedTraceId(id);
-    setSelectedSpanId(null);
-  };
-  const onSelectSpan = (id: string) => {
-    if (id === selectedSpanId) return;
-    setSelectedSpanId(id);
-  };
+  // Prune expandedTraceIds against the trace IDs currently present in
+  // ALL sessions (not just visibleSessions — History switches the filter
+  // off and shouldn't drop expansion state for stale-but-still-listed
+  // traces). Without this the Set accumulates dead keys for the lifetime
+  // of a long-running tab, AND a re-emitted trace_id (fixture replay,
+  // idempotent rerun) would auto-expand without the user clicking the
+  // chevron — silently violating uncontrolled-collapse expectations.
+  useEffect(() => {
+    if (expandedTraceIds.size === 0) return;
+    const live = new Set<string>();
+    for (const s of sessions) for (const t of s.traces) live.add(t.id);
+    let stale = false;
+    for (const id of expandedTraceIds) {
+      if (!live.has(id)) {
+        stale = true;
+        break;
+      }
+    }
+    if (!stale) return;
+    setExpandedTraceIds((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (live.has(id)) next.add(id);
+      }
+      return next;
+    });
+  }, [sessions, expandedTraceIds]);
+
+  const onSelectSession = useCallback(
+    (id: string) => {
+      // Always clear descendants on click — including when re-clicking the
+      // already-selected session. With the post-VOI-346 SPAN>TRACE>SESSION
+      // priority in DetailsPane, the SESSION aggregate is reachable ONLY
+      // when trace+span are null; otherwise DetailsPane falls through to
+      // TRACE/SPAN mode. The initial-load auto-promotion of the first
+      // trace means a fresh load puts DetailsPane in TRACE mode, and a
+      // bare-no-op early-return here would leave the user with no way to
+      // reach SESSION mode for that auto-promoted session — they'd have
+      // to navigate away to a different session and back. Codex round-5
+      // P2 2026-05-30.
+      setSelectedSessionId(id);
+      setSelectedTraceId(null);
+      setSelectedSpanId(null);
+    },
+    [],
+  );
+  const onSelectTrace = useCallback(
+    (id: string) => {
+      // Symmetric with onSelectSession: re-clicking the selected trace
+      // clears the span so DetailsPane can show TRACE mode. Without this,
+      // a span auto-promotion (none currently, but historically possible)
+      // would lock the user into SPAN mode for that trace.
+      setSelectedTraceId(id);
+      setSelectedSpanId(null);
+    },
+    [],
+  );
+  const onSelectSpan = useCallback(
+    (id: string) => {
+      if (id === selectedSpanId) return;
+      setSelectedSpanId(id);
+    },
+    [selectedSpanId],
+  );
+  const onToggleExpand = useCallback((traceId: string) => {
+    setExpandedTraceIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(traceId)) next.delete(traceId);
+      else next.add(traceId);
+      return next;
+    });
+  }, []);
+
+  const onTabChange = useCallback((next: TabKey) => {
+    setTab(next);
+    if (typeof window !== "undefined") {
+      const desired = `#${next}`;
+      if (window.location.hash !== desired) {
+        // Use replaceState so tab toggles don't bloat the back-stack.
+        window.history.replaceState(null, "", desired);
+      }
+    }
+  }, []);
 
   const activeSession: SessionGroup | null = useMemo(
-    () => sessions.find((s) => s.id === selectedSessionId) ?? null,
-    [sessions, selectedSessionId],
+    () => visibleSessions.find((s) => s.id === selectedSessionId) ?? null,
+    [visibleSessions, selectedSessionId],
   );
   const activeTrace: TraceGroup | null = useMemo(
     () => activeSession?.traces.find((t) => t.id === selectedTraceId) ?? null,
@@ -126,67 +279,104 @@ function Shell() {
     return activeTrace.spans.find((s) => spanRowId(s) === selectedSpanId) ?? null;
   }, [activeTrace, selectedSpanId]);
 
-  const totalSpans = useMemo(
-    () => sessions.reduce((acc, s) => acc + s.spanCount, 0),
-    [sessions],
-  );
-
-  const subtitle = buildSubtitle({
-    loading,
-    error,
-    sessionCount: sessions.length,
-    totalSpans,
-  });
-
   const sidebarEmpty = loading
     ? "// awaiting spans from ClickHouse..."
     : error
       ? `// ClickHouse error: ${error}`
-      : "// no spans yet · run cc-launch.sh to emit one";
+      : tab === "live"
+        ? "// no active sessions · switch to History for older"
+        : "// no spans yet · run cc-launch.sh to emit one";
 
   return (
-    <div style={shellStyle}>
+    <div className="voi-app" data-waterfall-collapsed={waterfallCollapsed ? "true" : "false"}>
       <header style={headerStyle}>
         <div style={titleColumnStyle}>
           <h1 style={titleStyle}>agent-observability</h1>
-          <p style={subtitleStyle}>{subtitle}</p>
+          <p style={subtitleStyle}>{buildSubtitle({ loading, error, tab, activeCount, totalCount })}</p>
         </div>
-        <ThemePicker />
+        <div style={headerControlsStyle}>
+          <LiveHistoryTabs
+            active={tab}
+            onChange={onTabChange}
+            activeCount={activeCount}
+            totalCount={totalCount}
+          />
+          <ThemePicker />
+        </div>
       </header>
 
-      <main className="voi-pane-grid">
-        <div style={paneContainerStyle}>
-          <SessionSidebar
-            sessions={sessions}
-            selectedSessionId={selectedSessionId}
-            onSelect={onSelectSession}
-            nowMs={nowMs}
-            emptyMessage={sidebarEmpty}
-          />
-        </div>
-        <div style={{ ...paneContainerStyle, ...verticalRuleStyle }}>
-          <TraceList
-            traces={activeSession?.traces ?? []}
-            selectedTraceId={selectedTraceId}
-            onSelect={onSelectTrace}
-            emptyMessage={
-              activeSession
-                ? "// no traces in this session"
-                : "// select a session to load its traces"
-            }
-          />
-        </div>
-        <div style={{ ...paneContainerStyle, ...verticalRuleStyle }}>
-          <div style={spansHalfStyle}>
-            <SpanTree
-              trace={activeTrace}
-              selectedSpanId={selectedSpanId}
-              onSelect={onSelectSpan}
+      {/*
+        The `<main>` landmark must contain ALL primary content. Previously
+        only the top 3-pane row carried role=main and the waterfall sat as
+        a sibling, so an assistive-tech user hitting the "main" landmark
+        shortcut landed in the 3-pane grid only — the waterfall (the most
+        time-consuming surface in the UI) was outside the main landmark.
+        Codex round-4 P1 2026-05-30. The waterfall's own region landmark
+        inside WaterfallShell still names the sub-region for screen-readers.
+      */}
+      <main className="voi-main" id="voi-sessions-panel">
+        <div className="voi-top-row">
+          <div style={paneContainerStyle}>
+            <SessionSidebar
+              sessions={visibleSessions}
+              selectedSessionId={selectedSessionId}
+              onSelect={onSelectSession}
+              nowMs={nowMs}
+              emptyMessage={sidebarEmpty}
             />
           </div>
-          <div style={inspectorHalfStyle}>
-            <InspectorPane span={activeSpan} />
+          <div style={paneContainerStyle}>
+            <CollapsibleTraceList
+              traces={activeSession?.traces ?? []}
+              selectedTraceId={selectedTraceId}
+              selectedSpanId={selectedSpanId}
+              expandedTraceIds={expandedTraceIds}
+              onSelectTrace={onSelectTrace}
+              onSelectSpan={onSelectSpan}
+              onToggleExpand={onToggleExpand}
+              emptyMessage={
+                activeSession
+                  ? "// no traces in this session"
+                  : "// select a session to load its traces"
+              }
+            />
           </div>
+          <div style={paneContainerStyle}>
+            <DetailsPane
+              span={activeSpan}
+              trace={activeTrace}
+              session={activeSession}
+              nowMs={nowMs}
+              emptyMessage={
+                loading
+                  ? "// awaiting spans from ClickHouse..."
+                  : error
+                    ? `// ClickHouse error: ${error}`
+                    : visibleSessions.length === 0
+                      ? tab === "live"
+                        ? "// no active sessions · switch to History for older"
+                        : "// no spans yet · run cc-launch.sh to emit one"
+                      : "// select a span to inspect its attributes"
+              }
+            />
+          </div>
+        </div>
+
+        <div className="voi-waterfall-row">
+          <WaterfallShell
+            spans={activeTrace?.spans ?? []}
+            durationSeconds={activeTrace?.durationSeconds ?? 0}
+            selectedSpanId={selectedSpanId}
+            onSelect={onSelectSpan}
+            nowMs={nowMs}
+            emptyMessage={
+              activeTrace
+                ? "// no spans in this trace"
+                : "// select a trace to load its waterfall"
+            }
+            collapsed={waterfallCollapsed}
+            onToggleCollapsed={() => setWaterfallCollapsed((c) => !c)}
+          />
         </div>
       </main>
     </div>
@@ -196,43 +386,35 @@ function Shell() {
 interface SubtitleInputs {
   loading: boolean;
   error: string | null;
-  sessionCount: number;
-  totalSpans: number;
+  tab: TabKey;
+  activeCount: number;
+  totalCount: number;
 }
 
-function buildSubtitle({
-  loading,
-  error,
-  sessionCount,
-  totalSpans,
-}: SubtitleInputs): string {
+function buildSubtitle({ loading, error, tab, activeCount, totalCount }: SubtitleInputs): string {
   if (loading) return "// awaiting spans from ClickHouse...";
   if (error) return `// ClickHouse error: ${error}`;
-  return `// ${sessionCount} sessions · ${totalSpans} spans`;
+  if (tab === "live") {
+    return `// live · ${activeCount} of ${totalCount} sessions active`;
+  }
+  return `// history · ${totalCount} sessions`;
 }
-
-const shellStyle: CSSProperties = {
-  minHeight: "100vh",
-  display: "flex",
-  flexDirection: "column",
-  background: "var(--bg)",
-  color: "var(--text)",
-};
 
 const headerStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
   gap: "16px",
-  padding: "16px 24px",
+  padding: "12px 24px",
   borderBottom: "1px solid var(--border-base)",
   flexWrap: "wrap",
+  background: "var(--surface)",
 };
 
 const titleColumnStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: "4px",
+  gap: "2px",
 };
 
 const titleStyle: CSSProperties = {
@@ -250,34 +432,16 @@ const subtitleStyle: CSSProperties = {
   color: "var(--text-muted)",
 };
 
-// Grid layout lives in app.css under .voi-pane-grid so the responsive
-// media queries (≤900px tighter tracks; ≤600px stacked) can co-locate
-// with the layout — CSSProperties cannot carry @media.
+const headerControlsStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "12px",
+  flexWrap: "wrap",
+};
 
 const paneContainerStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   minHeight: 0,
   overflow: "hidden",
-};
-
-const verticalRuleStyle: CSSProperties = {
-  borderLeft: "1px solid var(--border-base)",
-};
-
-const spansHalfStyle: CSSProperties = {
-  flex: 1,
-  minHeight: 0,
-  overflow: "hidden",
-  display: "flex",
-  flexDirection: "column",
-};
-
-const inspectorHalfStyle: CSSProperties = {
-  flex: 1,
-  minHeight: 0,
-  overflow: "hidden",
-  display: "flex",
-  flexDirection: "column",
-  borderTop: "1px solid var(--border-base)",
 };

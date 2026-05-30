@@ -129,6 +129,10 @@ interface SessionRowProps {
 function SessionRow({ session, selected, onSelect, nowMs }: SessionRowProps) {
   const accent = dominantFamilyAccent(session);
   const status = activityStatus(session, nowMs);
+  const lastActivityAgeSeconds = Math.max(
+    0,
+    Math.round((nowMs - session.lastActivity) / 1000),
+  );
 
   const rowStyle: CSSProperties = {
     position: "relative",
@@ -173,7 +177,10 @@ function SessionRow({ session, selected, onSelect, nowMs }: SessionRowProps) {
       <button
         type="button"
         onClick={() => onSelect(session.id)}
-        aria-pressed={selected}
+        // Single-select semantic — aria-current, not aria-pressed (which
+        // would announce each row as a per-row toggle). Codex round-4 P1
+        // 2026-05-30.
+        aria-current={selected ? "true" : undefined}
         data-selected={selected ? "true" : "false"}
         data-session-id={session.id}
         style={{ ...rowStyle, width: "100%", textAlign: "left" }}
@@ -185,8 +192,18 @@ function SessionRow({ session, selected, onSelect, nowMs }: SessionRowProps) {
           </>
         ) : null}
         <span style={rowTopLineStyle}>
-          <StatusDot status={status} hasError={session.hasError} accent={accent} />
-          <span style={sessionLabelStyle}>{session.displayLabel}</span>
+          <StatusDot
+            status={status}
+            hasError={session.hasError}
+            accent={accent}
+            ageSeconds={lastActivityAgeSeconds}
+          />
+          <span
+            style={sessionLabelStyle}
+            data-tooltip={`service.name=${session.serviceName}`}
+          >
+            {session.displayLabel}
+          </span>
         </span>
         <span style={sessionMetaStyle}>
           {`// ${session.traceCount} traces · ${session.spanCount} spans`}
@@ -200,9 +217,10 @@ interface StatusDotProps {
   status: ActivityStatus;
   hasError: boolean;
   accent: string;
+  ageSeconds: number;
 }
 
-function StatusDot({ status, hasError, accent }: StatusDotProps) {
+function StatusDot({ status, hasError, accent, ageSeconds }: StatusDotProps) {
   let color = accent;
   let animation: string | undefined;
   let label: string;
@@ -224,11 +242,13 @@ function StatusDot({ status, hasError, accent }: StatusDotProps) {
   } else {
     label = "stale";
   }
+  const tooltipText = `${label}, last activity ${ageSeconds}s ago`;
   return (
     <span
       aria-label={label}
       role="img"
-      title={label}
+      title={tooltipText}
+      data-tooltip={tooltipText}
       style={{
         display: "inline-block",
         width: "8px",
@@ -237,6 +257,7 @@ function StatusDot({ status, hasError, accent }: StatusDotProps) {
         background: color,
         animation,
         flexShrink: 0,
+        position: "relative",
       }}
     />
   );

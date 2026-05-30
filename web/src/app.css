@@ -3,7 +3,7 @@ body,
 #root {
   margin: 0;
   padding: 0;
-  min-height: 100vh;
+  height: 100vh;
   width: 100%;
 }
 
@@ -14,6 +14,7 @@ body {
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  overflow: hidden;
 }
 
 * {
@@ -52,45 +53,131 @@ select:hover {
 }
 
 /*
- * Liveness keyframes consumed by SessionSidebar status dot.
- * Active = amber-tinted pulsing dot; error = single red strobe on first
- * render then static. Both animate opacity/transform/filter only —
- * GPU-safe, no layout reflow.
+ * VOI-346 shell — top 3-pane row + bottom waterfall row + sticky header.
  *
- * Brutalist disables animation by setting --motion-snap: 0s in themes.css,
- * but these keyframes are global. Honor the prefers-reduced-motion media
- * query below so the cyberpunk discipline ("Motion only on liveness")
- * still respects user OS preference.
+ * Grid rows: header (auto) + top-pane row (flexible) + waterfall row
+ * (fixed-but-collapsible). The viewport is 100vh exactly; using fixed
+ * 60vh / 40vh on the two body rows would have totaled 100vh PLUS the
+ * header height and clipped the waterfall's last rows off-screen with
+ * overflow:hidden suppressing the scrollbar.
+ *
+ * Instead: the top row takes `minmax(0, 3fr)` and the waterfall row
+ * takes `minmax(0, 2fr)`, giving the spec's 3:2 (60:40) split of the
+ * REMAINING space after the header — no clipping under any header
+ * height. When the waterfall collapses, its row drops to 32px and the
+ * top row claims the freed space via its 1fr-relative weight.
  */
-/*
- * 3-pane shell grid. Default desktop layout matches the inline gridStyle
- * baseline (sidebar 280-320 + traces 320-360 + 1fr inspector half). Below
- * 900px the inspector half collapses (Tauri window narrower than its
- * normal docked width); below 600px the shell stacks vertically so panes
- * stay legible on a constrained browser viewport. Defined here so the
- * media query can co-locate with the layout it modifies — CSSProperties
- * can't carry @media.
- */
-.voi-pane-grid {
+.voi-app {
   display: grid;
-  grid-template-columns: minmax(280px, 320px) minmax(320px, 360px) 1fr;
-  gap: 0;
+  /* Outer grid: header row + the `<main>` landmark that wraps the rest.
+   * The interior row split (top 3-pane / waterfall) moved into .voi-main
+   * so the `<main>` landmark contains ALL primary content. Codex round-4
+   * P1 2026-05-30. */
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+}
+
+.voi-main {
+  display: grid;
+  grid-template-rows: minmax(0, 3fr) minmax(32px, 2fr);
   min-height: 0;
-  flex: 1;
+  overflow: hidden;
+}
+
+.voi-app[data-waterfall-collapsed="true"] .voi-main {
+  grid-template-rows: minmax(0, 1fr) 32px;
+}
+
+.voi-top-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 320px) minmax(320px, 400px) 1fr;
+  min-height: 0;
+  border-bottom: 1px solid var(--border-base);
+}
+
+.voi-top-row > * + * {
+  border-left: 1px solid var(--border-base);
+}
+
+.voi-waterfall-row {
+  min-height: 32px;
+  border-top: 1px solid var(--border-base);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 @media (max-width: 900px) {
-  .voi-pane-grid {
-    grid-template-columns: minmax(220px, 260px) minmax(260px, 300px) 1fr;
+  .voi-top-row {
+    grid-template-columns: minmax(220px, 260px) minmax(260px, 320px) 1fr;
   }
 }
 
 @media (max-width: 600px) {
-  .voi-pane-grid {
+  .voi-main {
+    grid-template-rows: 1fr auto;
+  }
+  .voi-top-row {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto 1fr;
+    height: auto;
     overflow-y: auto;
   }
+  .voi-top-row > * + * {
+    border-left: none;
+    border-top: 1px solid var(--border-base);
+  }
+}
+
+/*
+ * Lightweight CSS-only tooltip — opt-in via data-tooltip="text" on any
+ * element. Renders an absolutely-positioned label on :hover and :focus.
+ * pointer-events:none on the pseudo so it never intercepts clicks. Stays
+ * inside the viewport via right-side fallback when the element is on the
+ * right edge — handled by an additional :hover::after override on elements
+ * that opt-in with data-tooltip-align="right".
+ *
+ * Per CLAUDE.md "no third-party tooltip lib" — Radix/Tippy are NOT pulled
+ * in for this packet.
+ */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--surface-raised);
+  color: var(--text);
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: none;
+  letter-spacing: 0;
+  text-transform: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+[data-tooltip][data-tooltip-align="right"]:hover::after,
+[data-tooltip][data-tooltip-align="right"]:focus-visible::after {
+  left: auto;
+  right: 0;
+}
+
+[data-tooltip][data-tooltip-align="above"]:hover::after,
+[data-tooltip][data-tooltip-align="above"]:focus-visible::after {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 
 @keyframes voi-active-pulse {

@@ -1,0 +1,57 @@
+/*
+ * DetailsPane.css — supports hover-reveal copy-to-clipboard glyph on
+ * IDENTITY rows. The glyph stays hidden until the row is hovered or
+ * focused; click writes to clipboard + shows a 1.5s toast (toast
+ * positioning is inline-styled in the component).
+ *
+ * Renamed from InspectorPane.css (VOI-346) — the DOM class names stay
+ * `voi-inspector-*` to avoid a churn-only diff in the markup; the file
+ * sits alongside DetailsPane.tsx so co-located edits are obvious.
+ */
+
+.voi-inspector-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(120px, 220px) 1fr auto;
+  column-gap: 12px;
+  padding: 3px 4px;
+  border-radius: 2px;
+}
+
+.voi-inspector-row:hover,
+.voi-inspector-row:focus-within {
+  background: var(--surface);
+}
+
+.voi-inspector-copy {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--accent-1);
+  cursor: pointer;
+  padding: 0 4px;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.voi-inspector-row:hover .voi-inspector-copy,
+.voi-inspector-row:focus-within .voi-inspector-copy,
+.voi-inspector-copy:focus-visible {
+  opacity: 1;
+}
+
+.voi-inspector-copy:focus-visible {
+  outline: 1px solid var(--accent-1);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voi-inspector-copy {
+    transition: none;
+  }
+}

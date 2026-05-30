@@ -98,7 +98,12 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("// awaiting")).toBeDefined();
   });
 
-  it("marks selected row with data-selected=true and aria-pressed=true", () => {
+  it("marks selected row with data-selected=true and aria-current=true (single-select semantic)", () => {
+    // Contract updated per codex round-4 P1 2026-05-30: single-select
+    // session list uses aria-current, not aria-pressed. aria-pressed
+    // would announce each row as a per-row toggle to screen-readers,
+    // which doesn't match the interaction (the click flips the global
+    // selectedSessionId, not the row's own state).
     const sessions = [
       makeSession({ id: "s1", serviceName: "claude-code" }),
       makeSession({ id: "s2", serviceName: "claude-code" }),
@@ -114,9 +119,11 @@ describe("SessionSidebar", () => {
     const selected = document.querySelector('[data-session-id="s1"]');
     const other = document.querySelector('[data-session-id="s2"]');
     expect(selected?.getAttribute("data-selected")).toBe("true");
-    expect(selected?.getAttribute("aria-pressed")).toBe("true");
+    expect(selected?.getAttribute("aria-current")).toBe("true");
+    expect(selected?.getAttribute("aria-pressed")).toBeNull();
     expect(other?.getAttribute("data-selected")).toBe("false");
-    expect(other?.getAttribute("aria-pressed")).toBe("false");
+    expect(other?.getAttribute("aria-current")).toBeNull();
+    expect(other?.getAttribute("aria-pressed")).toBeNull();
   });
 
   it("error session renders status dot with aria-label 'error'", () => {

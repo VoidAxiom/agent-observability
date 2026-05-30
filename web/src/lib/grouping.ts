@@ -333,7 +333,7 @@ function effectiveSessionKey(row: SpanRow): string {
   return spanRowId(row);
 }
 
-function rowHasError(row: SpanRow): boolean {
+export function rowHasError(row: SpanRow): boolean {
   if (row.StatusCode.toUpperCase() === "ERROR") return true;
 
   // span attributes win on collision, mirroring Swift's `merging(_:_)` rule.
