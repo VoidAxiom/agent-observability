@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Purpose: run the M0 walking-skeleton smoke path end to end.
 # This script does not tear down on failure; containers stay up for log and ClickHouse inspection.
-# Next step for visual confirmation: make app-run.
+# Next step for visual confirmation: cd web && pnpm dev (Vite dev server on :5173).
 
 set -euo pipefail
 
@@ -80,6 +80,8 @@ COUNT="$(docker exec -i "${CID}" clickhouse-client --query "SELECT count() FROM 
 
 cat <<'EOF'
 ✓ walking skeleton verified — span 'agent_obs_sdk.smoke' landed in ClickHouse.
-  Now open the app to see it: make app-run
-  Expect to see 'agent_obs_sdk.smoke' in the list within 10 seconds.
+  Now open the UI to see it: cd web && pnpm dev
+  Then navigate to http://localhost:5173 — 'agent_obs_sdk.smoke' will appear
+  in the Sessions sidebar within 10 seconds (Live tab default; switch to
+  History if the span has aged past the 5-min active window).
 EOF
