@@ -248,11 +248,14 @@ function buildLayout(
     if (t < minStart) minStart = t;
     if (end > maxEnd) maxEnd = end;
   }
-  if (!Number.isFinite(minStart) || !Number.isFinite(maxEnd)) {
-    return { bars: [], durationMs: 0, crossEdges: [] };
-  }
-  const traceDuration = Math.max(1, maxEnd - minStart);
-  const scale = innerWidth / traceDuration;
+  // Note: we INTENTIONALLY don't early-return when every span has a bad
+  // Timestamp. The fallback pass below still needs to emit synthetic
+  // no-timestamp bars so the click-to-select contract with the trace
+  // list stays bidirectional even in that pathological case. Codex
+  // round-5 P1 2026-05-30 (catch on the round-4 fallback patch).
+  const hasAnyValid = Number.isFinite(minStart) && Number.isFinite(maxEnd);
+  const traceDuration = hasAnyValid ? Math.max(1, maxEnd - minStart) : 0;
+  const scale = hasAnyValid ? innerWidth / traceDuration : 0;
 
   // Resolve ancestor chains (transitive parents).
   const ancestorChain = new Map<string, Set<string>>();

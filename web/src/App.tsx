@@ -212,20 +212,32 @@ function Shell() {
 
   const onSelectSession = useCallback(
     (id: string) => {
-      if (id === selectedSessionId) return;
+      // Always clear descendants on click — including when re-clicking the
+      // already-selected session. With the post-VOI-346 SPAN>TRACE>SESSION
+      // priority in DetailsPane, the SESSION aggregate is reachable ONLY
+      // when trace+span are null; otherwise DetailsPane falls through to
+      // TRACE/SPAN mode. The initial-load auto-promotion of the first
+      // trace means a fresh load puts DetailsPane in TRACE mode, and a
+      // bare-no-op early-return here would leave the user with no way to
+      // reach SESSION mode for that auto-promoted session — they'd have
+      // to navigate away to a different session and back. Codex round-5
+      // P2 2026-05-30.
       setSelectedSessionId(id);
       setSelectedTraceId(null);
       setSelectedSpanId(null);
     },
-    [selectedSessionId],
+    [],
   );
   const onSelectTrace = useCallback(
     (id: string) => {
-      if (id === selectedTraceId) return;
+      // Symmetric with onSelectSession: re-clicking the selected trace
+      // clears the span so DetailsPane can show TRACE mode. Without this,
+      // a span auto-promotion (none currently, but historically possible)
+      // would lock the user into SPAN mode for that trace.
       setSelectedTraceId(id);
       setSelectedSpanId(null);
     },
-    [selectedTraceId],
+    [],
   );
   const onSelectSpan = useCallback(
     (id: string) => {

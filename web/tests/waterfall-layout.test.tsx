@@ -193,4 +193,32 @@ describe("Waterfall layout", () => {
     expect(bars.length).toBe(0);
     expect(container.textContent).toContain("//");
   });
+
+  it("emits synthetic no-timestamp bars when every span has an unparseable Timestamp", () => {
+    // Codex round-5 P1 2026-05-30: a trace whose spans ALL carry bad
+    // timestamps must still surface one synthetic bar per span so the
+    // bidirectional click-to-select contract with CollapsibleTraceList
+    // holds. The earlier early-return at "no valid window" bypassed the
+    // fallback pass entirely.
+    const badSpans: SpanRow[] = [
+      { ...span({ spanId: "a", startOffsetMs: 0, durationMs: 100 }), Timestamp: "not-a-timestamp" },
+      { ...span({ spanId: "b", startOffsetMs: 0, durationMs: 100 }), Timestamp: "" },
+      { ...span({ spanId: "c", startOffsetMs: 0, durationMs: 100 }), Timestamp: "0000-00-00" },
+    ];
+    const { container } = render(
+      <Waterfall
+        spans={badSpans}
+        selectedSpanId={null}
+        onSelect={() => {}}
+        nowMs={BASE_START_MS}
+        widthOverride={1000}
+      />,
+    );
+    const syntheticGroups = container.querySelectorAll(
+      'g[data-no-timestamp="true"]',
+    );
+    expect(syntheticGroups.length).toBe(3);
+    const allBars = container.querySelectorAll("rect.voi-waterfall-bar");
+    expect(allBars.length).toBe(3);
+  });
 });
