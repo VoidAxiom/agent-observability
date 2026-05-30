@@ -50,3 +50,65 @@ button:hover,
 select:hover {
   border-color: var(--border-active);
 }
+
+/*
+ * Liveness keyframes consumed by SessionSidebar status dot.
+ * Active = amber-tinted pulsing dot; error = single red strobe on first
+ * render then static. Both animate opacity/transform/filter only —
+ * GPU-safe, no layout reflow.
+ *
+ * Brutalist disables animation by setting --motion-snap: 0s in themes.css,
+ * but these keyframes are global. Honor the prefers-reduced-motion media
+ * query below so the cyberpunk discipline ("Motion only on liveness")
+ * still respects user OS preference.
+ */
+/*
+ * 3-pane shell grid. Default desktop layout matches the inline gridStyle
+ * baseline (sidebar 280-320 + traces 320-360 + 1fr inspector half). Below
+ * 900px the inspector half collapses (Tauri window narrower than its
+ * normal docked width); below 600px the shell stacks vertically so panes
+ * stay legible on a constrained browser viewport. Defined here so the
+ * media query can co-locate with the layout it modifies — CSSProperties
+ * can't carry @media.
+ */
+.voi-pane-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 320px) minmax(320px, 360px) 1fr;
+  gap: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+@media (max-width: 900px) {
+  .voi-pane-grid {
+    grid-template-columns: minmax(220px, 260px) minmax(260px, 300px) 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .voi-pane-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
+    overflow-y: auto;
+  }
+}
+
+@keyframes voi-active-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
+@keyframes voi-error-strobe {
+  0% { opacity: 1; filter: brightness(1.6); }
+  100% { opacity: 1; filter: brightness(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

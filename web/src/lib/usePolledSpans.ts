@@ -1,0 +1,158 @@
+/*
+ * usePolledSpans — fetch + group spans from ClickHouse on a 5s cadence.
+ *
+ * Contract:
+ *  - First mount sets loading=true, then either fills sessions or sets error.
+ *  - Subsequent polls swap data atomically: no flicker, loading stays false.
+ *  - nowMs advances with EVERY tick (successful OR errored). The wall clock
+ *    keeps ticking regardless of CH availability, so activityStatus()
+ *    correctly ages sessions during a CH outage.
+ *  - Errors don't blank prior data; sessions stays at last-good and error
+ *    carries the message. Recovery on the next successful tick clears error.
+ *  - In-flight fetches are guarded by a generation counter — if a slow poll
+ *    is overtaken by a LATER poll that has already committed, the stale
+ *    response is dropped so the UI never flashes back to an older snapshot.
+ *    A slow poll whose successor is also still in flight DOES commit when
+ *    it resolves (the order check is "is there a strictly newer committed
+ *    generation?", not "am I the latest started?") — this prevents
+ *    starvation when CH latency persistently exceeds intervalMs.
+ *  - Interval cleared on unmount; in-flight fetches no-op via mountedRef
+ *    so a tab-switched-out poll can't clobber state after teardown.
+ *  - options (fetchImpl, nowFn, config) are mirrored into refs on every
+ *    render so a parent that swaps an injected mock between renders sees
+ *    the change honored on the next tick.
+ */
+
+import { useEffect, useRef, useState } from "react";
+import {
+  fetchOnce,
+  loadConfigFromEnv,
+  type ClickHouseConfig,
+} from "./clickhouse";
+import { groupSpans, type SessionGroup, type SpanRow } from "./grouping";
+
+export interface PolledSpansState {
+  sessions: SessionGroup[];
+  nowMs: number;
+  error: string | null;
+  loading: boolean;
+}
+
+export interface UsePolledSpansOptions {
+  intervalMs?: number;
+  config?: ClickHouseConfig;
+  fetchImpl?: (config: ClickHouseConfig) => Promise<SpanRow[]>;
+  nowFn?: () => number;
+}
+
+const DEFAULT_INTERVAL_MS = 5000;
+
+export function usePolledSpans(
+  options: UsePolledSpansOptions = {},
+): PolledSpansState {
+  const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
+
+  // Refs mirror the latest options on every render so callers can swap
+  // mocks/config across renders without remounting the hook.
+  const configRef = useRef<ClickHouseConfig | null>(options.config ?? null);
+  const fetchRef = useRef(options.fetchImpl);
+  const nowRef = useRef(options.nowFn ?? (() => Date.now()));
+  // Refresh on every render — cheap; keeps the typed surface honest.
+  configRef.current = options.config ?? configRef.current;
+  fetchRef.current = options.fetchImpl;
+  nowRef.current = options.nowFn ?? (() => Date.now());
+
+  const mountedRef = useRef(true);
+  const generationRef = useRef(0);
+  // Highest generation that has actually committed state. A resolved fetch
+  // is dropped iff a STRICTLY LATER generation has already committed —
+  // this preserves the "stale-slow-fetch loses to newer-fast-fetch"
+  // ordering AND lets a slow successful poll commit when its successors
+  // are also still in flight (no starvation when CH latency > intervalMs).
+  const lastCommittedGenRef = useRef(0);
+
+  const [state, setState] = useState<PolledSpansState>(() => ({
+    sessions: [],
+    nowMs: nowRef.current(),
+    error: null,
+    loading: true,
+  }));
+
+  useEffect(() => {
+    mountedRef.current = true;
+    // Local-to-effect cancellation flag: cleanup flips it so any in-flight
+    // fetch from this effect cannot commit after a NEW effect (e.g. caused
+    // by intervalMs change) starts. The hook-scoped mountedRef alone is
+    // insufficient because React re-runs the effect body immediately after
+    // cleanup, flipping mountedRef back to true and letting a prior-effect
+    // fetch land into the new effect's lifecycle (which would also reset
+    // the generation counters — the old fetch would then look "newer" than
+    // anything committed in the new epoch). The cancelled-closure scopes
+    // the guard to THIS effect run.
+    let cancelled = false;
+
+    const resolveConfig = (): ClickHouseConfig => {
+      if (configRef.current) return configRef.current;
+      const cfg = loadConfigFromEnv();
+      configRef.current = cfg;
+      return cfg;
+    };
+
+    const doFetch = async (): Promise<void> => {
+      // Each fetch carries a monotonically increasing generation token. A
+      // resolved fetch commits iff no STRICTLY LATER generation has already
+      // committed (gen > lastCommittedGenRef). The "strictly later"
+      // condition lets a slow poll still commit when its successor is also
+      // still in flight, preventing starvation under sustained CH latency
+      // > intervalMs. The original "stale-slow-fetch loses to newer-fast-
+      // fetch" ordering is preserved: the fast successor commits first,
+      // bumps lastCommittedGen, and the older fetch is then dropped.
+      // The cancelled-closure additionally drops any fetch belonging to a
+      // prior effect epoch (cleanup → re-run) wholesale.
+      generationRef.current += 1;
+      const gen = generationRef.current;
+
+      let rows: SpanRow[];
+      try {
+        const cfg = resolveConfig();
+        const impl = fetchRef.current;
+        rows = impl ? await impl(cfg) : await fetchOnce(cfg);
+      } catch (err) {
+        if (cancelled || !mountedRef.current || gen <= lastCommittedGenRef.current) return;
+        const message = err instanceof Error ? err.message : String(err);
+        lastCommittedGenRef.current = gen;
+        setState((prev) => ({
+          // Preserve last-good sessions across a failed poll so a transient
+          // CH blip doesn't blank the UI.
+          sessions: prev.sessions,
+          nowMs: nowRef.current(),
+          error: message,
+          loading: false,
+        }));
+        return;
+      }
+      if (cancelled || !mountedRef.current || gen <= lastCommittedGenRef.current) return;
+      lastCommittedGenRef.current = gen;
+      const sessions = groupSpans(rows);
+      setState({
+        sessions,
+        nowMs: nowRef.current(),
+        error: null,
+        loading: false,
+      });
+    };
+
+    void doFetch();
+    const handle = window.setInterval(() => {
+      void doFetch();
+    }, intervalMs);
+
+    return () => {
+      cancelled = true;
+      mountedRef.current = false;
+      window.clearInterval(handle);
+    };
+  }, [intervalMs]);
+
+  return state;
+}
