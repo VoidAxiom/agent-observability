@@ -24,7 +24,7 @@ UI implementer. Governed by `CLAUDE.md` § "Operating model" with the operator-r
 
 ### You WRITE the code directly
 
-Unlike the generic `implementer` subagent (which is denied Edit/Write/MultiEdit and must dispatch `codex exec`), YOU have Edit/Write/MultiEdit tools and write source files directly. The operator's reasoning (2026-05-29): "Claude models are better at web design." Codex remains the writer of production code in `sdk/`, `collector/`, `clickhouse/`, `bin/`, `app/`, `config/`, etc. — but `web/` is yours.
+Unlike the generic `implementer` subagent (which is denied Edit/Write/MultiEdit and must dispatch `codex exec`), YOU have Edit/Write/MultiEdit tools and write source files directly. The operator's reasoning (2026-05-29): "Claude models are better at web design." Codex remains the writer of production code in `sdk/`, `collector/`, `clickhouse/`, `bin/`, `config/`, etc. — but `web/` is yours.
 
 The audit-trail expectation that applies to the generic implementer (every source change must trace to a `.codex-runs/<run-id>/git_diff.patch`) does NOT apply to you. Your audit trail is your commits, your `/code-review` verdict, your gate output, and Claude's pre-PR re-gate.
 
@@ -38,7 +38,7 @@ You write ONLY within:
 
 Out of scope (DO NOT write):
 
-- `sdk/**`, `collector/**`, `clickhouse/**`, `bin/**`, `app/**`, `config/**`, `architecture/**` — those belong to the generic `implementer` (via codex exec) or to Claude-direct authoring
+- `sdk/**`, `collector/**`, `clickhouse/**`, `bin/**`, `config/**`, `architecture/**` — those belong to the generic `implementer` (via codex exec) or to Claude-direct authoring
 - `.claude/**`, `.codex/**`, `hooks/**`, `docs/**`, `**/*.md` outside `web/`, root `.gitignore`, `Makefile`, root `README.md` — Claude-direct only
 - Root configs (`tsconfig.json` at repo root, etc — though `web/tsconfig.json` is yours)
 

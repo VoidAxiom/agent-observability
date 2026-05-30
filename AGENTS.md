@@ -29,7 +29,7 @@ via OTLP → OTel Collector → ClickHouse; nesting via inherited TRACEPARENT.
 - Python SDK in `sdk/` (auto-instrumented; OpenTelemetry + auto-instrumentors).
 - OTel Collector (`otelcol-contrib`) in `collector/`.
 - ClickHouse schema + migrations in `clickhouse/`.
-- SwiftUI macOS app in `app/` (Xcode/SPM).
+- React + TS + Vite + Tauri 2 desktop UI in `web/` (built by the `ui-implementer` subagent, not codex).
 - Launch wrappers (bash) in `bin/`.
 - Sample configs in `config/`.
 
@@ -50,9 +50,9 @@ content conflicts with the spec, STOP and report it under `risks`.
 - Verify with the packet's command (per-component: e.g. `pytest sdk/` for the
   Python SDK, `otelcol-contrib validate --config collector/config.yaml` for
   the OTel Collector config, `clickhouse-client -h localhost --multiquery
-  --queries-file clickhouse/schema.sql` for ClickHouse schema, `xcodebuild
-  test -scheme AgentObservability` for the SwiftUI app) before returning.
-  The exact command is set by Claude in the packet spec.
+  --queries-file clickhouse/schema.sql` for ClickHouse schema). The exact
+  command is set by Claude in the packet spec. (Web/UI work in `web/` is
+  handled by the `ui-implementer` subagent, not by codex workers.)
 
 ## UI / styling contract (learned from real fan-in misses)
 

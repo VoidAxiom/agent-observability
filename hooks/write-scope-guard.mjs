@@ -76,7 +76,7 @@ const UI_IMPL_PREFIXES = ['web']
 // single-file entries (e.g. `src/index.css`) are also supported — entries
 // without a trailing `/` or `/**` are treated as exact file paths. Ignored
 // at runtime when SCOPE_MODE === 'blocklist'.
-const IMPL_SCOPE_RAW = "sdk/** collector/** clickhouse/** bin/** app/** config/**"
+const IMPL_SCOPE_RAW = "sdk/** collector/** clickhouse/** bin/** config/**"
 const _scopeEntries = IMPL_SCOPE_RAW.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
 const IMPL_PREFIXES = []
 const IMPL_FILES = []
@@ -96,7 +96,15 @@ for (const entry of _scopeEntries) {
 // anywhere inside the active write root EXCEPT these. Strict-prefix dir
 // match + exact-file match + anchored basename match (no substring-anywhere).
 // Used only when SCOPE_MODE === 'blocklist'.
-const CLAUDE_ONLY_DIRS = ['.claude', '.codex', 'hooks', 'docs', 'architecture', '.understand-anything']
+//
+// `app` is listed here NOT because Claude writes Swift code (the SwiftUI app
+// was deleted in PR #17 post the 2026-05-30 100%-web pivot), but as a
+// retired-dir gate: blocklist mode otherwise allows impl writes anywhere
+// the worktree doesn't enumerate, so a fresh codex worker tasked with a
+// packet that doesn't pin scope could silently reintroduce `app/...` files
+// and the role check wouldn't catch it. Listing `app` here makes the
+// blocklist refuse those writes outright.
+const CLAUDE_ONLY_DIRS = ['.claude', '.codex', 'hooks', 'docs', 'architecture', '.understand-anything', 'app']
 const CLAUDE_ONLY_FILES = ['.gitignore']
 const CLAUDE_ONLY_BASENAME_RE = /\.md$/i
 

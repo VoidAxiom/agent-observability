@@ -10,8 +10,8 @@
 A local-first observability system for multi-agent coding work. It captures
 telemetry from Claude Code sessions, the Codex `exec` runs they spawn, and
 (optionally) our own OpenAI Responses-API calls, stitches them into a single
-nested trace tree, stores everything in ClickHouse, and surfaces it in a native
-macOS dashboard. The headline capability: when a Claude Code session spawns N
+nested trace tree, stores everything in ClickHouse, and surfaces it in a
+React + Tauri desktop UI. The headline capability: when a Claude Code session spawns N
 Codex children, those children appear as children of the session — not as
 disconnected traces — and each can be correlated to the task/ticket it was
 working.
@@ -39,12 +39,17 @@ These are decided. Do not revisit without asking.
   - Use `LowCardinality(String)` for provenance keys, a JSON catchall column for
     schema drift, per-table TTL for retention. Large blobs go to object storage;
     only a manifest row (with `uri`) lives in ClickHouse.
-- **App:** Native macOS, SwiftUI + Swift Charts. Three surfaces: a menu-bar
-  pulse (live activity ticker), a session galaxy (the agent tree rendered from
-  the span hierarchy), and a metrics deck (token/throughput/error panels).
-  Reads ClickHouse over its HTTP interface (`:8123`), `JSONEachRow`, via an
-  actor-based query service that polls every few seconds. Pure read client — no
-  writes.
+- **App:** React + TypeScript + Vite + Tauri 2 (pivoted from SwiftUI 2026-05-29,
+  100% web confirmed 2026-05-30). Three primary surfaces: a 3-pane top
+  (Sessions / Traces / Details) with a Live (5-min active) / History tab toggle,
+  a full-width collapsible Waterfall at the bottom, and a context-sensitive
+  Details pane (span > trace > session priority). 21-combo theming system
+  (7 styles × 3 palettes) with cyberpunk maximalism as the default. Reads
+  ClickHouse over its HTTP interface (`:8123`), `JSONEachRow`, via a 5-second
+  poll with a generation-guarded `usePolledSpans` hook. Pure read client — no
+  writes. (Originally specified as SwiftUI + Swift Charts; the menu-bar pulse
+  and session galaxy concepts are deferred — galaxy was superseded by the
+  Waterfall timeline as it actually shows latency and sequencing.)
 - **Companions:** DuckDB for offline ad-hoc SQL over completed runs. SigNoz
   optionally runs on the same ClickHouse for a free stock OTel UI. Both are
   read-only consumers; neither is required for the app to work.
@@ -88,7 +93,7 @@ These are decided. Do not revisit without asking.
 
 ```
 repo-root/
-  app/                  SwiftUI macOS app (Xcode/SPM)
+  web/                  React + TS + Vite + Tauri 2 desktop UI (pivoted from SwiftUI 2026-05-29)
   clickhouse/           schema.sql, materialized views, migrations
   bin/                  launch wrappers — cc-launch.sh, codex-spawn.sh (TRACEPARENT plumbing)
   sdk/                  provenance-stamping SDK (language per DECISION above)

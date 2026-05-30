@@ -401,7 +401,7 @@ Per change:
   - Python SDK (`sdk/**`): `pytest sdk/ -q`.
   - OTel Collector config (`collector/**`): `otelcol-contrib validate --config collector/config.yaml`.
   - ClickHouse schema (`clickhouse/**`): `clickhouse-client -h localhost --multiquery --queries-file clickhouse/schema.sql` against the dev instance, plus a smoke `SELECT` proving the table exists.
-  - SwiftUI app (`app/**`): `xcodebuild test -scheme AgentObservability -destination 'platform=macOS'`.
+  - Web UI (`web/**`): `cd web && pnpm tsc --noEmit && pnpm test --run && pnpm build && pnpm lint`. (Handled by `ui-implementer`, not generic `implementer`.)
   - Launch wrappers (`bin/**`): `bash scripts/check-shell-syntax.sh bin/<script>.sh` plus the wrapper's `--dry-run` if defined.
 - If a visual/runtime inspection harness exists, `` — say
   what you observed and judged.
@@ -748,7 +748,7 @@ build are recorded here. When the spec is updated, sync this section.
 
 ```
 agent-observability/
-  app/                  SwiftUI macOS app (Xcode/SPM) — menu-bar pulse, session galaxy, metrics deck
+  web/                  React + TS + Vite + Tauri 2 desktop UI (pivoted from SwiftUI 2026-05-29) — built by ui-implementer
   clickhouse/           schema.sql, materialized views, migrations (otel_* + agents.*)
   bin/                  launch wrappers — cc-launch.sh, codex-spawn.sh (TRACEPARENT plumbing)
   sdk/                  Python provenance-stamping SDK (auto-instrumentor wrappers)
@@ -766,7 +766,7 @@ agent-observability/
 | `sdk/**` | `pytest sdk/ -q` |
 | `collector/**` | `otelcol-contrib validate --config collector/config.yaml` |
 | `clickhouse/**` | `clickhouse-client -h localhost --multiquery --queries-file clickhouse/schema.sql` plus a `SELECT` smoke |
-| `app/**` | `xcodebuild test -scheme AgentObservability -destination 'platform=macOS'` |
+| `web/**` | `cd web && pnpm tsc --noEmit && pnpm test --run && pnpm build && pnpm lint` (handled by `ui-implementer`) |
 | `bin/**` | `bash scripts/check-shell-syntax.sh bin/<script>.sh` + the wrapper's `--dry-run` if defined |
 
 **Runtime verification (per `§ Deliver a working product`):** every packet
@@ -774,32 +774,37 @@ spec MUST also name a `### Runtime verification` step that exercises the
 user-visible behavior end-to-end on the dev box. For this project that
 typically means: run an emit via the Python SDK, watch the OTLP arrive at
 the Collector, query ClickHouse via `clickhouse-client`, and (where
-relevant) observe the span/run rendered in the SwiftUI app.
+relevant) observe the span/run rendered in the React + Tauri UI under
+`web/` (via `pnpm dev` + Playwright navigation against `http://localhost:5174`
+— `web/vite.config.ts` pins `port: 5174` with `strictPort: true`).
 
 **Build approach: walking skeleton first** (load-bearing — overrides any
 default "scaffold-then-vertical" instinct).
 
-M0 is an **end-to-end prototype** — a thin vertical slice that proves the
-entire pipe (Python SDK emit → OTel Collector → ClickHouse → SwiftUI app
-renders the span). Single trace, no nesting, no `agents.*` tables, no
-visual depth. The bar is: a fresh dev box runs `make demo` (or the
-equivalent), opens the app, and sees their emitted span in the UI within
-~60 seconds.
+M0 was an **end-to-end prototype** — a thin vertical slice that proved the
+entire pipe (Python SDK emit → OTel Collector → ClickHouse → UI renders
+the span). Single trace, no nesting, no `agents.*` tables, no visual
+depth. The bar was: a fresh dev box runs `make demo`, opens the UI, and
+sees their emitted span within ~60 seconds.
 
-Every subsequent milestone **enriches the working prototype**, never adds a
-missing layer to a system that doesn't yet run end-to-end. M1 adds
-provenance stamping; M2 adds nesting (the headline trick); M3 adds the
-`agents.*` tables + join; M4 replaces the M0 list view with the session
-galaxy + metrics deck; M5 adds companions + polish. **At no point does a
-packet land that leaves the app non-functional.** If a refactor needs to
-break the app temporarily, sequence it so the breakage and the fix ship in
-the same PR.
+**Swift→Web pivot, 2026-05-29.** M0's SwiftUI list shipped; M1/M2/M3 then
+landed on the Swift side. The UI was then re-built on React + TS + Vite +
+Tauri 2 (web rebuild: VOI-344 foundation, VOI-345 3-pane navigation,
+VOI-346 waterfall + inspector). The Swift `app/` directory has been
+removed; the web rebuild is the only UI going forward.
 
-This biases every spec toward minimum viable change: the M0 SwiftUI view
-is a single `List` of `(trace_id, name, start_ns, attributes_summary)` —
-not a galaxy, not a chart, not a menu bar — and M4 is when the galaxy
-arrives, replacing that list. The walking skeleton is permitted to be
-ugly; it is not permitted to be incomplete.
+Every milestone **enriches the working prototype**, never adds a missing
+layer to a system that doesn't yet run end-to-end. M1 added provenance
+stamping; M2 added cross-process nesting (the headline trick); M3 added
+the agents `service.name` enrichment + the React 3-pane navigation; the
+waterfall + inspector overhaul lands in VOI-346; M5 ships companions +
+polish. **At no point does a packet land that leaves the app
+non-functional.** If a refactor needs to break the app temporarily,
+sequence it so the breakage and the fix ship in the same PR.
+
+The walking skeleton was permitted to be ugly; it was not permitted to be
+incomplete. The same rule applies to the web rebuild — every packet leaves
+`pnpm dev` working against real ClickHouse data.
 
 **Project ledger.**
 

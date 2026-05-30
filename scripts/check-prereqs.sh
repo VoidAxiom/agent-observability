@@ -125,16 +125,32 @@ else
        "'brew install --cask clickhouse-client'"
 fi
 
-# -- OPTIONAL: M4 SwiftUI app -------------------------------------------------
+# -- REQUIRED: web UI runtime ------------------------------------------------
 
-# xcodebuild — required for app/ packets (VOI-309, VOI-312, VOI-314, M4 packets).
-# Soft for M0 dev boxes that aren't building the app yet.
-if command -v xcodebuild >/dev/null 2>&1; then
-  xc_ver="$(xcodebuild -version 2>/dev/null | head -1 | awk '{print $2}')"
-  pass "xcodebuild $xc_ver"
+# node ≥ 20 — required by Vite (web/) for the React + Tauri 2 UI.
+# Promoted from optional (was likec4-only) to required when the SwiftUI app
+# was deleted in this PR and `cd web && pnpm dev` became the documented M0
+# follow-up path.
+if command -v node >/dev/null 2>&1; then
+  node_v="$(node --version | sed 's/^v//')"
+  if version_ge "$node_v" "20.0.0"; then
+    pass "node $node_v (≥ 20 required for web/ Vite)"
+  else
+    fail "node $node_v (need ≥ 20 for web/ Vite)" "'brew upgrade node' or use nvm"
+  fi
 else
-  soft "xcodebuild (Xcode / Command Line Tools) — needed for VOI-309 onwards (the SwiftUI app)" \
-       "'xcode-select --install' or install full Xcode from the App Store"
+  fail "node not on PATH (web/ UI requires Node ≥ 20 for Vite)" "'brew install node'"
+fi
+
+# pnpm — package manager for web/. Required for `cd web && pnpm install`
+# / `pnpm dev` / `pnpm test --run` / `pnpm build` / `pnpm lint` per the
+# CLAUDE.md per-component gate table and the README quickstart.
+if command -v pnpm >/dev/null 2>&1; then
+  pnpm_v="$(pnpm --version 2>/dev/null)"
+  pass "pnpm $pnpm_v"
+else
+  fail "pnpm not on PATH (web/ UI requires pnpm)" \
+       "'npm install -g pnpm' or 'brew install pnpm' or 'corepack enable && corepack prepare pnpm@latest --activate'"
 fi
 
 # -- OPTIONAL: collector binary mode + load testing ---------------------------
@@ -161,18 +177,8 @@ fi
 
 # -- OPTIONAL: architecture-as-code -------------------------------------------
 
-# node — needed by likec4 (architecture/ rendering). Optional until likec4
-# install lands in a dedicated packet.
-if command -v node >/dev/null 2>&1; then
-  v="$(node --version | sed 's/^v//')"
-  if version_ge "$v" "20.0.0"; then
-    pass "node $v"
-  else
-    soft "node $v is old; likec4 wants ≥ 20" "'brew upgrade node'"
-  fi
-else
-  soft "node (only required for likec4 architecture rendering)" "'brew install node'"
-fi
+# node already checked above as REQUIRED for the web UI runtime; likec4
+# also wants ≥ 20 so the same check satisfies both.
 
 # likec4 — architecture/ → docs/architecture/*.svg rendering. Soft.
 if [ -x "node_modules/.bin/likec4" ]; then
