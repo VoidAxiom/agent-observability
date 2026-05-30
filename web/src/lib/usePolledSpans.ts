@@ -10,8 +10,12 @@
  *  - Errors don't blank prior data; sessions stays at last-good and error
  *    carries the message. Recovery on the next successful tick clears error.
  *  - In-flight fetches are guarded by a generation counter — if a slow poll
- *    is overtaken by the next interval tick, the stale response is dropped
- *    so the UI never flashes back to an older snapshot.
+ *    is overtaken by a LATER poll that has already committed, the stale
+ *    response is dropped so the UI never flashes back to an older snapshot.
+ *    A slow poll whose successor is also still in flight DOES commit when
+ *    it resolves (the order check is "is there a strictly newer committed
+ *    generation?", not "am I the latest started?") — this prevents
+ *    starvation when CH latency persistently exceeds intervalMs.
  *  - Interval cleared on unmount; in-flight fetches no-op via mountedRef
  *    so a tab-switched-out poll can't clobber state after teardown.
  *  - options (fetchImpl, nowFn, config) are mirrored into refs on every
@@ -60,6 +64,12 @@ export function usePolledSpans(
 
   const mountedRef = useRef(true);
   const generationRef = useRef(0);
+  // Highest generation that has actually committed state. A resolved fetch
+  // is dropped iff a STRICTLY LATER generation has already committed —
+  // this preserves the "stale-slow-fetch loses to newer-fast-fetch"
+  // ordering AND lets a slow successful poll commit when its successors
+  // are also still in flight (no starvation when CH latency > intervalMs).
+  const lastCommittedGenRef = useRef(0);
 
   const [state, setState] = useState<PolledSpansState>(() => ({
     sessions: [],
@@ -70,6 +80,8 @@ export function usePolledSpans(
 
   useEffect(() => {
     mountedRef.current = true;
+    lastCommittedGenRef.current = 0;
+    generationRef.current = 0;
 
     const resolveConfig = (): ClickHouseConfig => {
       if (configRef.current) return configRef.current;
@@ -79,9 +91,14 @@ export function usePolledSpans(
     };
 
     const doFetch = async (): Promise<void> => {
-      // Each fetch carries a generation token; if a later tick has
-      // already started (or finished) by the time we resolve, drop our
-      // result so the UI never regresses to an older snapshot.
+      // Each fetch carries a monotonically increasing generation token. A
+      // resolved fetch commits iff no STRICTLY LATER generation has already
+      // committed (gen > lastCommittedGenRef). The "strictly later"
+      // condition lets a slow poll still commit when its successor is also
+      // still in flight, preventing starvation under sustained CH latency
+      // > intervalMs. The original "stale-slow-fetch loses to newer-fast-
+      // fetch" ordering is preserved: the fast successor commits first,
+      // bumps lastCommittedGen, and the older fetch is then dropped.
       generationRef.current += 1;
       const gen = generationRef.current;
 
@@ -91,8 +108,9 @@ export function usePolledSpans(
         const impl = fetchRef.current;
         rows = impl ? await impl(cfg) : await fetchOnce(cfg);
       } catch (err) {
-        if (!mountedRef.current || gen !== generationRef.current) return;
+        if (!mountedRef.current || gen <= lastCommittedGenRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
+        lastCommittedGenRef.current = gen;
         setState((prev) => ({
           // Preserve last-good sessions across a failed poll so a transient
           // CH blip doesn't blank the UI.
@@ -103,7 +121,8 @@ export function usePolledSpans(
         }));
         return;
       }
-      if (!mountedRef.current || gen !== generationRef.current) return;
+      if (!mountedRef.current || gen <= lastCommittedGenRef.current) return;
+      lastCommittedGenRef.current = gen;
       const sessions = groupSpans(rows);
       setState({
         sessions,

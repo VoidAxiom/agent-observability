@@ -127,6 +127,68 @@ describe("usePolledSpans", () => {
     }
   });
 
+  it("does NOT starve when every poll is slower than intervalMs", async () => {
+    // Regression: codex PR#16 P1. When CH latency consistently exceeds
+    // intervalMs, the old generation guard ("am I the latest started?")
+    // discarded EVERY response because a newer generation had already
+    // started by resolve-time. The fixed guard ("is a strictly later
+    // generation already committed?") lets the first slow poll commit
+    // when its successor is still in flight.
+    vi.useFakeTimers();
+    try {
+      const resolvers: Array<(rows: SpanRow[]) => void> = [];
+      const fetchImpl = vi.fn(
+        () =>
+          new Promise<SpanRow[]>((resolve) => {
+            resolvers.push(resolve);
+          }),
+      );
+
+      let last: ReturnType<typeof usePolledSpans> | null = null;
+      render(
+        <Probe
+          intervalMs={50}
+          fetchImpl={fetchImpl}
+          onState={(s) => {
+            last = s;
+          }}
+        />,
+      );
+
+      // Let the first fetch start, then advance past the interval so a
+      // SECOND fetch is also fired and now in-flight alongside the first.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60);
+      });
+      expect(resolvers.length).toBeGreaterThanOrEqual(2);
+
+      // Resolve the FIRST (slow) fetch. Under the old guard this would
+      // have been dropped (gen=1 !== generationRef=2). Under the fixed
+      // guard it commits (gen=1 > lastCommittedGen=0).
+      await act(async () => {
+        resolvers[0]!([row("first-slow", "session-a")]);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const afterFirst = last as unknown as ReturnType<typeof usePolledSpans>;
+      expect(afterFirst.sessions.length).toBe(1);
+      expect(afterFirst.sessions[0]!.sessionKey).toBe("session-a");
+      expect(afterFirst.loading).toBe(false);
+
+      // The second fetch (gen=2) is still in flight; resolving it should
+      // also commit since gen=2 > lastCommittedGen=1.
+      await act(async () => {
+        resolvers[1]!([row("second-slow", "session-b")]);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const afterSecond = last as unknown as ReturnType<typeof usePolledSpans>;
+      expect(afterSecond.sessions.length).toBe(1);
+      expect(afterSecond.sessions[0]!.sessionKey).toBe("session-b");
+    } finally {
+      vi.useRealTimers();
+      cleanup();
+    }
+  });
+
   it("error during fetch keeps last-good sessions and surfaces message", async () => {
     vi.useFakeTimers();
     try {

@@ -97,7 +97,7 @@ export function SessionSidebar({
         >
           SESSIONS
         </h2>
-        <span style={paneHeaderHintStyle}>// {sessions.length}</span>
+        <span style={paneHeaderHintStyle}>{`// ${sessions.length}`}</span>
       </header>
       {buckets.map((bucket) => (
         <section key={bucket.serviceName} style={bucketStyle}>
