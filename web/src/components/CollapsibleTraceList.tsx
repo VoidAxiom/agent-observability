@@ -198,7 +198,18 @@ function TraceItem({
               key={spanRowId(span)}
               span={span}
               selected={spanRowId(span) === selectedSpanId}
-              onSelect={onSelectSpan}
+              onSelect={(spanId) => {
+                // Promote the parent trace before setting the span so
+                // DetailsPane/Waterfall switch to the new trace context.
+                // Without this, expanding trace B (different from the
+                // currently-selected trace A) and clicking one of B's
+                // span rows leaves selectedTraceId=A; activeSpan looks
+                // up the click in A's spans (not found) and DetailsPane
+                // stays on A's aggregate while the row is highlighted
+                // — a desync. Codex round-6 P2 2026-05-30.
+                if (!selected) onSelectTrace(trace.id);
+                onSelectSpan(spanId);
+              }}
             />
           ))}
         </ul>
