@@ -80,7 +80,10 @@ COUNT="$(docker exec -i "${CID}" clickhouse-client --query "SELECT count() FROM 
 
 cat <<'EOF'
 ✓ walking skeleton verified — span 'agent_obs_sdk.smoke' landed in ClickHouse.
-  Now open the UI to see it: cd web && pnpm dev
+  Now open the UI to see it:
+      cd web && pnpm install && pnpm dev
+  (pnpm install is first-time only; if web/node_modules already exists you
+  can skip straight to pnpm dev.)
   Then navigate to http://localhost:5173 — 'agent_obs_sdk.smoke' will appear
   in the Sessions sidebar within 10 seconds (Live tab default; switch to
   History if the span has aged past the 5-min active window).
