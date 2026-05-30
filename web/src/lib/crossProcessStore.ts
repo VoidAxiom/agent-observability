@@ -59,10 +59,11 @@ export const useCrossProcessStore = create<CrossProcessState>((set, get) => ({
     set({ celebrated: loadFromStorage(), hydrated: true });
   },
   hasCelebrated: (edgeKey: string) => {
-    if (!get().hydrated) {
-      // Lazy-hydrate on first read.
-      set({ celebrated: loadFromStorage(), hydrated: true });
-    }
+    // Pure read — do NOT set() here. Components that need hydration must
+    // call hydrate() from a useEffect; calling set() inside what may be a
+    // render-time selector violates React's no-state-update-during-render
+    // rule and can cause "Cannot update a component while rendering"
+    // warnings + missed sweeps under concurrent rendering.
     return get().celebrated.has(edgeKey);
   },
   markCelebrated: (edgeKey: string) => {

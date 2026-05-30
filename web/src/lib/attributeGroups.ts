@@ -78,12 +78,14 @@ export const ATTRIBUTE_GROUPS: AttributeGroup[] = [
     name: "REQUEST",
     dotVar: "var(--accent-3)",
     dotOpacity: 1,
+    // gen_ai.usage.* is split: input/prompt → REQUEST; output/completion →
+    // RESPONSE. The plain prefix used to swallow both — keeping the
+    // 4-bucket discipline the file docstring promises.
     matches: (key) =>
       REQUEST_EXACT.has(key) ||
       key.startsWith("gen_ai.request.") ||
-      key.startsWith("gen_ai.usage.") ||
       key.startsWith("llm.request.") ||
-      key.startsWith("llm.usage."),
+      isUsageRequestKey(key),
   },
   {
     name: "RESPONSE",
@@ -92,7 +94,8 @@ export const ATTRIBUTE_GROUPS: AttributeGroup[] = [
     matches: (key) =>
       RESPONSE_EXACT.has(key) ||
       key.startsWith("gen_ai.response.") ||
-      key.startsWith("llm.response."),
+      key.startsWith("llm.response.") ||
+      isUsageResponseKey(key),
   },
   {
     name: "IDENTITY",
@@ -125,6 +128,28 @@ export const OTHER_GROUP: AttributeGroup = {
   dotOpacity: 0.7,
   matches: () => true,
 };
+
+function isUsageRequestKey(key: string): boolean {
+  // gen_ai.usage.input_tokens / .prompt_tokens / .cache_read_tokens etc.
+  // Anything that's clearly REQUEST-side input consumption.
+  if (!key.startsWith("gen_ai.usage.") && !key.startsWith("llm.usage.")) {
+    return false;
+  }
+  const tail = key.split(".").pop() ?? "";
+  return (
+    tail.includes("input") ||
+    tail.includes("prompt") ||
+    tail.includes("cache")
+  );
+}
+
+function isUsageResponseKey(key: string): boolean {
+  if (!key.startsWith("gen_ai.usage.") && !key.startsWith("llm.usage.")) {
+    return false;
+  }
+  const tail = key.split(".").pop() ?? "";
+  return tail.includes("output") || tail.includes("completion");
+}
 
 export function groupForKey(key: string): AttributeGroupName {
   for (const group of ATTRIBUTE_GROUPS) {

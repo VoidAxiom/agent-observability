@@ -33,8 +33,19 @@ describe("formatHeroMagnitude", () => {
 });
 
 describe("formatHeroDurationMs", () => {
-  it("renders sub-second as integer ms", () => {
-    expect(formatHeroDurationMs(0)).toBe("0ms");
+  it("preserves sub-ms resolution (tool spans frequently sub-ms)", () => {
+    expect(formatHeroDurationMs(0)).toBe("0.00ms");
+    expect(formatHeroDurationMs(0.05)).toBe("0.05ms");
+    expect(formatHeroDurationMs(0.5)).toBe("0.50ms");
+  });
+
+  it("renders 1ms-100ms with 1 decimal", () => {
+    expect(formatHeroDurationMs(1)).toBe("1.0ms");
+    expect(formatHeroDurationMs(47.3)).toBe("47.3ms");
+    expect(formatHeroDurationMs(99.9)).toBe("99.9ms");
+  });
+
+  it("renders 100ms-1s as integer ms", () => {
     expect(formatHeroDurationMs(524)).toBe("524ms");
     expect(formatHeroDurationMs(999)).toBe("999ms");
   });

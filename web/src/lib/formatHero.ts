@@ -33,11 +33,21 @@ export function formatHeroMagnitude(value: number): string {
 
 /*
  * formatHeroDurationMs — duration formatter for the Duration / TTFT hero
- * numerals. Sub-second values render as integer ms; second-or-greater
- * values render with 2 decimal places + "s".
+ * numerals.
+ *  - ms < 1   → 2-decimal "0.50ms" (tool spans are frequently sub-ms;
+ *    integer rounding would collapse 0.05ms and 0.4ms to "0ms").
+ *  - ms < 100 → 1-decimal "47.3ms"
+ *  - ms < 1000 → integer ms
+ *  - ms >= 1000 → seconds with 2 decimal places + "s"
  */
 export function formatHeroDurationMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "0ms";
+  if (ms < 1) {
+    return `${ms.toFixed(2)}ms`;
+  }
+  if (ms < 100) {
+    return `${ms.toFixed(1)}ms`;
+  }
   if (ms < 1000) {
     return `${Math.round(ms)}ms`;
   }

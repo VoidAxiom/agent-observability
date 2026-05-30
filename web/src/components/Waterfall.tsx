@@ -268,6 +268,10 @@ function buildLayout(
     const accent = familyToAccentVar(family);
     const rawX = (startMs - minStart) * scale;
     const rawWidth = Math.max(MIN_BAR_WIDTH, (span.Duration / 1_000_000) * scale);
+    // Clamp X so the MIN_BAR_WIDTH floor can't push the right edge past
+    // the inner axis (a near-trace-end sub-microsecond span at x=799.96
+    // width=1 would otherwise overflow into RIGHT_PAD or the viewBox).
+    const clampedX = Math.min(rawX, Math.max(0, innerWidth - rawWidth));
     const endMs = startMs + span.Duration / 1_000_000;
     const isRunning =
       isStatusUnset(span.StatusCode) && endMs > nowMs - 1000;
@@ -275,7 +279,7 @@ function buildLayout(
       span,
       spanId: id,
       rowIndex: index,
-      x: LEFT_GUTTER + rawX,
+      x: LEFT_GUTTER + clampedX,
       y: TIME_AXIS_HEIGHT + index * ROW_HEIGHT + BAR_Y_OFFSET,
       width: rawWidth,
       family,
@@ -524,10 +528,13 @@ interface CrossProcessEdgesProps {
 
 function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
   const pathRefs = useRef<Map<string, SVGPathElement>>(new Map());
-  const hasCelebrated = useCrossProcessStore((s) => s.hasCelebrated);
   const markCelebrated = useCrossProcessStore((s) => s.markCelebrated);
   const hydrate = useCrossProcessStore((s) => s.hydrate);
+  const celebratedSet = useCrossProcessStore((s) => s.celebrated);
+  const hydrated = useCrossProcessStore((s) => s.hydrated);
 
+  // Hydrate on mount — pure read in render is safe (no set() in selector
+  // any more); hydration runs in an effect so React's rules aren't violated.
   useEffect(() => {
     hydrate();
   }, [hydrate]);
@@ -538,14 +545,20 @@ function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
   const sweptThisMountRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    // Don't drive sweeps until hydration finishes — otherwise we may fire
+    // for an edge the store hasn't loaded as "already celebrated" yet.
+    if (!hydrated) return undefined;
+
     const prefersReducedMotion =
       typeof window !== "undefined" &&
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+    const activeTweens: gsap.core.Tween[] = [];
+
     for (const edge of edges) {
       if (sweptThisMountRef.current.has(edge.key)) continue;
-      if (hasCelebrated(edge.key)) {
+      if (celebratedSet.has(edge.key)) {
         sweptThisMountRef.current.add(edge.key);
         continue;
       }
@@ -574,24 +587,40 @@ function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
           "data-state": "sweep",
         },
       });
-      gsap.to(path, {
+      const tween = gsap.to(path, {
         attr: { "stroke-dashoffset": 0 },
         duration: 0.6,
         ease: "power2.out",
         onComplete: () => {
+          // Guard against unmount: the path may have been detached if the
+          // user navigated away mid-sweep. isConnected returns false for a
+          // detached node; in that case do NOT mark celebrated — the user
+          // never saw the dopamine moment, let it play next time.
+          if (!path.isConnected) return;
           path.setAttribute("data-state", "settled");
           path.removeAttribute("stroke-dasharray");
           path.removeAttribute("stroke-dashoffset");
           markCelebrated(edge.key);
         },
       });
+      activeTweens.push(tween);
     }
-  }, [edges, hasCelebrated, markCelebrated]);
+
+    return () => {
+      // On unmount or edges-change, kill in-flight tweens so onComplete
+      // can't fire against a detached path (still safe via isConnected,
+      // but explicit kill avoids spurious work and lets a remount replay
+      // a tween that never completed visibly).
+      for (const tween of activeTweens) {
+        tween.kill();
+      }
+    };
+  }, [edges, celebratedSet, hydrated, markCelebrated]);
 
   return (
     <g aria-hidden="true">
       {edges.map((edge) => {
-        const alreadyCelebrated = hasCelebrated(edge.key);
+        const alreadyCelebrated = celebratedSet.has(edge.key);
         return (
           <path
             key={edge.key}

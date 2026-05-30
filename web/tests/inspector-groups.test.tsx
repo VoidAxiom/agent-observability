@@ -89,6 +89,10 @@ describe("InspectorPane groups", () => {
 
   it("renders copy button only on IDENTITY rows", () => {
     const s = span({
+      // TraceId/SpanId on the SpanRow itself contribute IDENTITY rows too
+      // (spec requires them in the IDENTITY card).
+      TraceId: "trace-abc",
+      SpanId: "span-xyz",
       SpanAttributesRaw: {
         model: "claude-sonnet-4-5",
         request_id: "req_abc",
@@ -101,7 +105,14 @@ describe("InspectorPane groups", () => {
     const identityCopyButtons = identityCard!.querySelectorAll(
       "button.voi-inspector-copy",
     );
-    expect(identityCopyButtons.length).toBe(2);
+    // request_id + session.id + TraceId + SpanId = 4 IDENTITY rows
+    expect(identityCopyButtons.length).toBe(4);
+
+    const identityKeys = Array.from(
+      identityCard!.querySelectorAll("dt"),
+    ).map((dt) => dt.textContent);
+    expect(identityKeys).toContain("TraceId");
+    expect(identityKeys).toContain("SpanId");
 
     const requestCard = container.querySelector('article[data-group="REQUEST"]');
     const requestCopyButtons = requestCard!.querySelectorAll(
@@ -135,6 +146,66 @@ describe("InspectorPane groups", () => {
     expect(writeText).toHaveBeenCalledWith("req_abc_123");
     const status = await screen.findByRole("status");
     expect(status.textContent).toContain("copied request_id");
+  });
+
+  it("gen_ai.usage.* splits input→REQUEST and output→RESPONSE", () => {
+    const s = span({
+      SpanAttributesRaw: {
+        "gen_ai.usage.input_tokens": "1000",
+        "gen_ai.usage.prompt_tokens": "800",
+        "gen_ai.usage.cache_read_tokens": "200",
+        "gen_ai.usage.output_tokens": "500",
+        "gen_ai.usage.completion_tokens": "450",
+      },
+    });
+    const { container } = render(<InspectorPane span={s} />);
+    const requestKeys = Array.from(
+      container.querySelectorAll('article[data-group="REQUEST"] dt'),
+    ).map((dt) => dt.textContent);
+    const responseKeys = Array.from(
+      container.querySelectorAll('article[data-group="RESPONSE"] dt'),
+    ).map((dt) => dt.textContent);
+    expect(requestKeys).toContain("gen_ai.usage.input_tokens");
+    expect(requestKeys).toContain("gen_ai.usage.prompt_tokens");
+    expect(requestKeys).toContain("gen_ai.usage.cache_read_tokens");
+    expect(responseKeys).toContain("gen_ai.usage.output_tokens");
+    expect(responseKeys).toContain("gen_ai.usage.completion_tokens");
+    expect(requestKeys).not.toContain("gen_ai.usage.output_tokens");
+    expect(responseKeys).not.toContain("gen_ai.usage.input_tokens");
+  });
+
+  it("copy without navigator.clipboard surfaces 'copy unavailable', no false success", async () => {
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
+
+    const s = span({
+      TraceId: "trace-no-clip",
+      SpanId: "span-no-clip",
+      SpanAttributesRaw: { request_id: "rq" },
+    });
+    render(<InspectorPane span={s} />);
+
+    const button = screen.getByLabelText("copy request_id");
+    await act(async () => {
+      fireEvent.click(button);
+      await Promise.resolve();
+    });
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("copy unavailable");
+    expect(status.textContent).not.toContain("copied request_id");
+  });
+
+  it("status pill shows UNSET (not OK) for empty StatusCode — matches waterfall running detection", () => {
+    const s = span({ StatusCode: "" });
+    render(<InspectorPane span={s} />);
+    // The header text must include UNSET and must not include a bare OK
+    // claim for the in-flight span.
+    const header = screen.getByRole("heading", { level: 2 }).parentElement!;
+    expect(header.textContent).toContain("UNSET");
+    expect(header.textContent).not.toContain("OK");
   });
 
   it("never renders a dollar / $ figure anywhere in the inspector", () => {

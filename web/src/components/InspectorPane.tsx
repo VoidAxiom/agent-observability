@@ -59,6 +59,11 @@ export function InspectorPane({ span, emptyMessage }: InspectorPaneProps) {
     for (const [k, v] of Object.entries(span.SpanAttributesRaw)) {
       merged[k] = v;
     }
+    // Promote top-level identity columns into the merged attribute map so
+    // the IDENTITY card can render TraceId/SpanId (spec acceptance) — they
+    // live as SpanRow columns, not in the otel attribute maps.
+    if (span.TraceId) merged.TraceId = span.TraceId;
+    if (span.SpanId) merged.SpanId = span.SpanId;
     return merged;
   }, [span]);
 
@@ -73,10 +78,18 @@ export function InspectorPane({ span, emptyMessage }: InspectorPaneProps) {
   }, [span, mergedAttrs]);
 
   const handleCopy = useCallback(async (label: string, value: string) => {
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.clipboard?.writeText
+    ) {
+      // Clipboard API unavailable (non-secure context, sandboxed iframe,
+      // pre-iOS-13.4 Safari) — surface honestly instead of silently lying
+      // with a "copied" toast that leaves stale clipboard content.
+      setToast("copy unavailable");
+      return;
+    }
     try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(value);
-      }
+      await navigator.clipboard.writeText(value);
       setToast(`copied ${label}`);
     } catch {
       setToast("copy failed");
@@ -95,7 +108,10 @@ export function InspectorPane({ span, emptyMessage }: InspectorPaneProps) {
 
   const family = spanNameToFamily(span.SpanName);
   const accent = familyToAccentVar(family);
-  const statusText = span.StatusCode || "OK";
+  // Don't lie with "OK" when the span has no status (OTel default until
+  // span-end). The waterfall treats StatusCode='' as "potentially running"
+  // and pulses the bar; mirror that signal here so the two panes agree.
+  const statusText = resolveStatusText(span.StatusCode);
 
   return (
     <section aria-label="Inspector" style={paneStyle}>
@@ -274,6 +290,16 @@ function buildHeroNumerals(
   }
 
   return numerals.slice(0, 4);
+}
+
+function resolveStatusText(code: string): string {
+  const upper = code.toUpperCase();
+  if (upper === "" || upper === "STATUS_CODE_UNSET" || upper === "UNSET") {
+    return "UNSET";
+  }
+  if (upper === "STATUS_CODE_OK") return "OK";
+  if (upper === "STATUS_CODE_ERROR") return "ERROR";
+  return code;
 }
 
 function readNumeric(
