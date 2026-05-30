@@ -34,12 +34,12 @@ agent-observability/
 ## Quickstart
 
 ```bash
-make help          # list every Makefile target with its owner packet
-make demo          # walking-skeleton end-to-end (lands in VOI-310)
-cd web && pnpm dev # bring up the React UI against the live CH (Vite dev-server)
+make help                          # list every Makefile target with its owner packet
+make demo                          # walking-skeleton end-to-end (lands in VOI-310)
+cd web && pnpm install && pnpm dev # bring up the React UI (pnpm install is first-time only)
 ```
 
-`make demo` is the **M0 acceptance gate** — brings up the full stack (ClickHouse + Collector), emits a single Python OTLP span, and asserts it landed in ClickHouse. Then `pnpm dev` in `web/` opens the live 3-pane Sessions/Traces/Spans navigation against the same ClickHouse.
+`make demo` is the **M0 acceptance gate** — brings up the full stack (ClickHouse + Collector), emits a single Python OTLP span, and asserts it landed in ClickHouse. Then in `web/`, `pnpm install` (fetches Vite/React + deps; first-time only) followed by `pnpm dev` opens the live 3-pane Sessions/Traces/Spans navigation against the same ClickHouse.
 
 ## Project ledger
 
