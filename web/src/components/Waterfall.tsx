@@ -35,6 +35,8 @@ import { spanRowId, type SpanRow } from "../lib/grouping";
 import { parseTimestamp } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
 import { buildEdgeKey, useCrossProcessStore } from "../lib/crossProcessStore";
+import { bestContrastTextOn } from "../lib/bestContrast";
+import { isSubagent } from "../lib/isSubagent";
 import "./Waterfall.css";
 
 export interface WaterfallProps {
@@ -149,12 +151,6 @@ export function Waterfall({
       ref={containerRef}
       data-testid="voi-waterfall"
     >
-      <header style={paneHeaderStyle}>
-        <h2 style={paneHeaderTitleStyle}>WATERFALL</h2>
-        <span style={paneHeaderHintStyle}>
-          {`// ${spans.length} spans · ${formatTraceDuration(layout.durationMs)}`}
-        </span>
-      </header>
       <div style={svgWrapperStyle}>
         <svg
           className="voi-waterfall"
@@ -357,6 +353,20 @@ function WaterfallBar({
 
   const label = bar.span.SpanName;
   const showLabel = bar.width > 40;
+  const sub = isSubagent(bar.span);
+  // The subagent suffix needs ~80px of bar width to render without crowding
+  // the main label; below that, skip it entirely (per spec).
+  const showSubagent = sub && bar.width >= 80;
+  const truncatedLabel = truncateLabel(
+    label,
+    showSubagent ? bar.width - 60 : bar.width,
+  );
+  // Pick a label fill that reads against the bar's family color. The 3
+  // bright-neon accent families resolve to dark `--bg`; everything else
+  // (only the muted accent or unknown vars) falls back to `--text`. This
+  // is the headline contrast fix — no more white labels on neon fills.
+  const labelColorVar = bestContrastTextOn(bar.accent);
+  const labelFill = `var(${labelColorVar})`;
 
   return (
     <g
@@ -364,6 +374,7 @@ function WaterfallBar({
       data-depth={bar.span.depth}
       data-row-index={bar.rowIndex}
       data-selected={selected ? "true" : "false"}
+      data-subagent={sub ? "true" : "false"}
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
       onFocus={onHoverStart}
@@ -381,6 +392,8 @@ function WaterfallBar({
       aria-pressed={selected}
       style={{ cursor: "pointer", outline: "none" }}
     >
+      {/* Native SVG tooltip with full span name (no truncation). */}
+      <title>{label}</title>
       <rect
         className="voi-waterfall-bar"
         x={bar.x}
@@ -410,8 +423,20 @@ function WaterfallBar({
           className="voi-waterfall-label"
           x={bar.x + 6}
           y={bar.y + BAR_HEIGHT / 2 + 3}
+          style={{ fill: labelFill }}
         >
-          {truncateLabel(label, bar.width)}
+          {truncatedLabel}
+        </text>
+      ) : null}
+      {showSubagent ? (
+        <text
+          className="voi-waterfall-subagent"
+          x={bar.x + bar.width - 4}
+          y={bar.y + BAR_HEIGHT / 2 + 3}
+          style={{ fill: labelFill }}
+          textAnchor="end"
+        >
+          [SUBAGENT]
         </text>
       ) : null}
     </g>
@@ -507,12 +532,6 @@ function formatTickMs(ms: number): string {
     return seconds % 1 === 0 ? `${seconds}s` : `${seconds.toFixed(1)}s`;
   }
   return `${Math.round(ms)}ms`;
-}
-
-function formatTraceDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "0ms";
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  return `${(ms / 1000).toFixed(2)}s`;
 }
 
 function truncateLabel(label: string, widthPx: number): string {
@@ -649,28 +668,6 @@ const paneStyle: CSSProperties = {
   padding: "14px 12px",
   overflowY: "auto",
   height: "100%",
-};
-
-const paneHeaderStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  padding: "0 4px",
-};
-
-const paneHeaderTitleStyle: CSSProperties = {
-  margin: 0,
-  fontFamily: "var(--font-numeric)",
-  fontSize: "11px",
-  letterSpacing: "0.12em",
-  color: "var(--text)",
-  textTransform: "uppercase",
-};
-
-const paneHeaderHintStyle: CSSProperties = {
-  fontFamily: "var(--font-mono)",
-  fontSize: "11px",
-  color: "var(--text-muted)",
 };
 
 const svgWrapperStyle: CSSProperties = {

@@ -70,9 +70,15 @@ function span(o: Partial<SpanRow> & { SpanId: string; TraceId: string; SessionId
 }
 
 function setMock(rows: SpanRow[]): void {
+  // Pin nowMs within the 5-minute "active" window relative to the fixture
+  // timestamps (2026-01-01T00:0X:0Y...). The Live tab filter drops stale
+  // sessions; selection-flow tests pre-date the tabs feature and assume
+  // every fixture session is visible. Keeping nowMs at 00:01:30 leaves
+  // sess1 (00:01:Y) ~30s old and sess2 (00:02:Y) ~30s in the future — both
+  // resolve as "active" via activityStatus' ageSeconds <= 5*60 branch.
   mockState = {
     sessions: groupSpans(rows),
-    nowMs: Date.UTC(2026, 0, 2),
+    nowMs: Date.UTC(2026, 0, 1, 0, 1, 30),
     error: null,
     loading: false,
   };

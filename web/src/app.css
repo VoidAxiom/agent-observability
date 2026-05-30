@@ -3,7 +3,7 @@ body,
 #root {
   margin: 0;
   padding: 0;
-  min-height: 100vh;
+  height: 100vh;
   width: 100%;
 }
 
@@ -14,6 +14,7 @@ body {
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  overflow: hidden;
 }
 
 * {
@@ -52,45 +53,114 @@ select:hover {
 }
 
 /*
- * Liveness keyframes consumed by SessionSidebar status dot.
- * Active = amber-tinted pulsing dot; error = single red strobe on first
- * render then static. Both animate opacity/transform/filter only —
- * GPU-safe, no layout reflow.
- *
- * Brutalist disables animation by setting --motion-snap: 0s in themes.css,
- * but these keyframes are global. Honor the prefers-reduced-motion media
- * query below so the cyberpunk discipline ("Motion only on liveness")
- * still respects user OS preference.
+ * VOI-346 shell — top 3-pane row + bottom waterfall row + sticky header.
+ * The waterfall row collapses to 32px (the chip height) when WaterfallShell
+ * sets data-collapsed=true on its child <section>; we capture that via the
+ * parent .voi-waterfall-row.is-collapsed modifier that App.tsx toggles.
  */
-/*
- * 3-pane shell grid. Default desktop layout matches the inline gridStyle
- * baseline (sidebar 280-320 + traces 320-360 + 1fr inspector half). Below
- * 900px the inspector half collapses (Tauri window narrower than its
- * normal docked width); below 600px the shell stacks vertically so panes
- * stay legible on a constrained browser viewport. Defined here so the
- * media query can co-locate with the layout it modifies — CSSProperties
- * can't carry @media.
- */
-.voi-pane-grid {
+.voi-app {
   display: grid;
-  grid-template-columns: minmax(280px, 320px) minmax(320px, 360px) 1fr;
-  gap: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+}
+
+.voi-top-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 320px) minmax(320px, 400px) 1fr;
   min-height: 0;
-  flex: 1;
+  height: 60vh;
+  border-bottom: 1px solid var(--border-base);
+}
+
+.voi-top-row > * + * {
+  border-left: 1px solid var(--border-base);
+}
+
+.voi-waterfall-row {
+  height: 40vh;
+  min-height: 32px;
+  border-top: 1px solid var(--border-base);
+  display: flex;
+  flex-direction: column;
+  transition: height 200ms ease-out;
+  overflow: hidden;
+}
+
+.voi-waterfall-row.is-collapsed {
+  height: 32px;
 }
 
 @media (max-width: 900px) {
-  .voi-pane-grid {
-    grid-template-columns: minmax(220px, 260px) minmax(260px, 300px) 1fr;
+  .voi-top-row {
+    grid-template-columns: minmax(220px, 260px) minmax(260px, 320px) 1fr;
   }
 }
 
 @media (max-width: 600px) {
-  .voi-pane-grid {
+  .voi-app {
+    grid-template-rows: auto 1fr auto;
+  }
+  .voi-top-row {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto 1fr;
+    height: auto;
     overflow-y: auto;
   }
+  .voi-top-row > * + * {
+    border-left: none;
+    border-top: 1px solid var(--border-base);
+  }
+}
+
+/*
+ * Lightweight CSS-only tooltip — opt-in via data-tooltip="text" on any
+ * element. Renders an absolutely-positioned label on :hover and :focus.
+ * pointer-events:none on the pseudo so it never intercepts clicks. Stays
+ * inside the viewport via right-side fallback when the element is on the
+ * right edge — handled by an additional :hover::after override on elements
+ * that opt-in with data-tooltip-align="right".
+ *
+ * Per CLAUDE.md "no third-party tooltip lib" — Radix/Tippy are NOT pulled
+ * in for this packet.
+ */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--surface-raised);
+  color: var(--text);
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: none;
+  letter-spacing: 0;
+  text-transform: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+[data-tooltip][data-tooltip-align="right"]:hover::after,
+[data-tooltip][data-tooltip-align="right"]:focus-visible::after {
+  left: auto;
+  right: 0;
+}
+
+[data-tooltip][data-tooltip-align="above"]:hover::after,
+[data-tooltip][data-tooltip-align="above"]:focus-visible::after {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 
 @keyframes voi-active-pulse {

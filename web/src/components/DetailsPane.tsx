@@ -1,26 +1,24 @@
 /*
- * InspectorPane — right pane (bottom half). Structured attribute view
- * with hero numerals on top + 4 grouped cards (REQUEST / RESPONSE /
- * IDENTITY / ENVIRONMENT) + OTHER catch-all.
+ * DetailsPane — right pane of the top 3-pane grid. Context-sensitive
+ * rendering: SPAN > TRACE > SESSION priority. The deepest selected
+ * entity drives the view.
  *
- * Per cyberpunk discipline § "Inspector (right pane)":
- *  - Top band: 3-4 hero numerals at 56px in family colors with `// label`
- *    underneath at 11px muted.
- *  - Token magnitudes use formatHeroMagnitude (524913 → "524.9k").
- *  - NO dollar figures anywhere — operator-ratified forever-rule.
- *  - Group headers: ALL-CAPS Departure Mono with letter-spacing, colored
- *    dot prefix matching family.
- *  - Identity rows: hover-reveal copy-to-clipboard glyph in magenta.
+ *  - SPAN mode: hero numerals (duration, tokens, ttft) + 4 attribute
+ *    group cards (REQUEST / RESPONSE / IDENTITY / ENVIRONMENT) + OTHER.
+ *    Hidden-keys filter applied via attributeGroups.ts.
+ *  - TRACE mode: hero duration (seconds) + 3 small stats + terminal
+ *    comment summary.
+ *  - SESSION mode: hero span count + 2 small stats + terminal comment
+ *    summary.
+ *  - Empty: placeholder text.
  *
- * Attributes flow: SpanAttributesRaw + ResourceAttributesRaw merge
- * (span wins on key collision) → groupAttributes() bucketizes by
- * REQUEST / RESPONSE / IDENTITY / ENVIRONMENT / OTHER → render each as
- * a bordered card on --surface-raised.
+ * Carries forward the hero-numeral + per-card structure from InspectorPane;
+ * the SPAN branch IS the prior InspectorPane (modulo the hidden-keys filter).
  */
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Copy } from "lucide-react";
-import type { SpanRow } from "../lib/grouping";
+import type { SessionGroup, SpanRow, TraceGroup } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
 import {
   groupAttributes,
@@ -28,23 +26,54 @@ import {
   type GroupedAttributes,
 } from "../lib/attributeGroups";
 import { formatHeroDurationMs, formatHeroMagnitude } from "../lib/formatHero";
-import "./InspectorPane.css";
+import "./DetailsPane.css";
 
-export interface InspectorPaneProps {
+export interface DetailsPaneProps {
   span: SpanRow | null;
-  emptyMessage?: string;
+  trace: TraceGroup | null;
+  session: SessionGroup | null;
+  nowMs: number;
 }
 
 interface HeroNumeral {
   key: string;
   label: string;
-  value: string;
+  /** Magnitude-formatted display value (e.g. "524.9k", "12.4s"). */
+  display: string;
+  /** Exact value for the tooltip (e.g. "524,913", "12.439s"). */
+  exact: string;
   color: string;
 }
 
 const TOAST_DURATION_MS = 1500;
 
-export function InspectorPane({ span, emptyMessage }: InspectorPaneProps) {
+export function DetailsPane({ span, trace, session, nowMs }: DetailsPaneProps) {
+  if (span) {
+    return <SpanDetails span={span} />;
+  }
+  if (trace) {
+    return <TraceDetails trace={trace} />;
+  }
+  if (session) {
+    return <SessionDetails session={session} nowMs={nowMs} />;
+  }
+  return (
+    <section aria-label="Details" style={emptyPaneStyle}>
+      <p style={emptyTextStyle}>// select a span to inspect its attributes</p>
+    </section>
+  );
+}
+
+// ===========================================================================
+// SPAN mode (the prior InspectorPane, with the hidden-keys filter applied
+// via attributeGroups.groupAttributes()).
+// ===========================================================================
+
+interface SpanDetailsProps {
+  span: SpanRow;
+}
+
+function SpanDetails({ span }: SpanDetailsProps) {
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
@@ -54,14 +83,13 @@ export function InspectorPane({ span, emptyMessage }: InspectorPaneProps) {
   }, [toast]);
 
   const mergedAttrs = useMemo(() => {
-    if (!span) return {};
     const merged: Record<string, string> = { ...span.ResourceAttributesRaw };
     for (const [k, v] of Object.entries(span.SpanAttributesRaw)) {
       merged[k] = v;
     }
-    // Promote top-level identity columns into the merged attribute map so
-    // the IDENTITY card can render TraceId/SpanId (spec acceptance) — they
-    // live as SpanRow columns, not in the otel attribute maps.
+    // Promote top-level identity columns so the IDENTITY card carries
+    // TraceId/SpanId (spec acceptance) — they live as SpanRow columns,
+    // not in the otel attribute maps.
     if (span.TraceId) merged.TraceId = span.TraceId;
     if (span.SpanId) merged.SpanId = span.SpanId;
     return merged;
@@ -73,8 +101,7 @@ export function InspectorPane({ span, emptyMessage }: InspectorPaneProps) {
   );
 
   const heroNumerals = useMemo<HeroNumeral[]>(() => {
-    if (!span) return [];
-    return buildHeroNumerals(span, mergedAttrs);
+    return buildSpanHeroNumerals(span, mergedAttrs);
   }, [span, mergedAttrs]);
 
   const handleCopy = useCallback(async (label: string, value: string) => {
@@ -82,9 +109,6 @@ export function InspectorPane({ span, emptyMessage }: InspectorPaneProps) {
       typeof navigator === "undefined" ||
       !navigator.clipboard?.writeText
     ) {
-      // Clipboard API unavailable (non-secure context, sandboxed iframe,
-      // pre-iOS-13.4 Safari) — surface honestly instead of silently lying
-      // with a "copied" toast that leaves stale clipboard content.
       setToast("copy unavailable");
       return;
     }
@@ -96,25 +120,12 @@ export function InspectorPane({ span, emptyMessage }: InspectorPaneProps) {
     }
   }, []);
 
-  if (!span) {
-    return (
-      <section aria-label="Inspector" style={emptyPaneStyle}>
-        <p style={emptyTextStyle}>
-          {emptyMessage ?? "// select a span to inspect its attributes"}
-        </p>
-      </section>
-    );
-  }
-
   const family = spanNameToFamily(span.SpanName);
   const accent = familyToAccentVar(family);
-  // Don't lie with "OK" when the span has no status (OTel default until
-  // span-end). The waterfall treats StatusCode='' as "potentially running"
-  // and pulses the bar; mirror that signal here so the two panes agree.
   const statusText = resolveStatusText(span.StatusCode);
 
   return (
-    <section aria-label="Inspector" style={paneStyle}>
+    <section aria-label="Details" style={paneStyle}>
       <header style={headerStyle}>
         <div style={headerTopStyle}>
           <span aria-hidden="true" style={{ ...accentDot, background: accent }} />
@@ -154,6 +165,128 @@ export function InspectorPane({ span, emptyMessage }: InspectorPaneProps) {
   );
 }
 
+// ===========================================================================
+// TRACE mode
+// ===========================================================================
+
+interface TraceDetailsProps {
+  trace: TraceGroup;
+}
+
+function TraceDetails({ trace }: TraceDetailsProps) {
+  const cyan = "var(--accent-3)";
+  const services = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of trace.spans) {
+      if (s.ServiceName) set.add(s.ServiceName);
+    }
+    return Array.from(set);
+  }, [trace.spans]);
+  const errorCount = trace.spans.reduce(
+    (n, s) => (s.StatusCode.toUpperCase() === "ERROR" ? n + 1 : n),
+    0,
+  );
+  const rootName = trace.spans[0]?.SpanName ?? trace.displayLabel;
+
+  const durationDisplay = trace.durationSeconds < 1
+    ? `${(trace.durationSeconds * 1000).toFixed(0)}ms`
+    : `${trace.durationSeconds.toFixed(2)}s`;
+  const durationExact = `${trace.durationSeconds.toFixed(6)}s`;
+
+  return (
+    <section aria-label="Details" style={paneStyle}>
+      <header style={headerStyle}>
+        <div style={headerTopStyle}>
+          <span aria-hidden="true" style={{ ...accentDot, background: cyan }} />
+          <h2 style={titleStyle}>{trace.displayLabel}</h2>
+          <span style={statusPillStyle}>TRACE</span>
+        </div>
+        <p style={metaCommentStyle}>{`// root ${rootName}`}</p>
+      </header>
+
+      <div style={heroBandStyle} data-testid="voi-hero-band">
+        <HeroCell
+          numeral={{
+            key: "duration",
+            label: "duration",
+            display: durationDisplay,
+            exact: durationExact,
+            color: cyan,
+          }}
+        />
+      </div>
+
+      <div style={miniStatsRowStyle}>
+        <MiniStat label="spans" value={String(trace.spanCount)} />
+        <MiniStat label="errors" value={String(errorCount)} />
+        <MiniStat label="services" value={String(services.length)} />
+      </div>
+
+      <p style={summaryCommentStyle}>
+        {`// ${trace.spanCount} spans across ${services.length} service${services.length === 1 ? "" : "s"} · root ${rootName}`}
+      </p>
+    </section>
+  );
+}
+
+// ===========================================================================
+// SESSION mode
+// ===========================================================================
+
+interface SessionDetailsProps {
+  session: SessionGroup;
+  nowMs: number;
+}
+
+function SessionDetails({ session, nowMs }: SessionDetailsProps) {
+  const cyan = "var(--accent-3)";
+  const lastActivitySeconds = Math.max(
+    0,
+    Math.round((nowMs - session.lastActivity) / 1000),
+  );
+
+  const heroDisplay = formatHeroMagnitude(session.spanCount);
+  const heroExact = session.spanCount.toLocaleString("en-US");
+
+  return (
+    <section aria-label="Details" style={paneStyle}>
+      <header style={headerStyle}>
+        <div style={headerTopStyle}>
+          <span aria-hidden="true" style={{ ...accentDot, background: cyan }} />
+          <h2 style={titleStyle}>{session.displayLabel}</h2>
+          <span style={statusPillStyle}>SESSION</span>
+        </div>
+        <p style={metaCommentStyle}>{`// service ${session.serviceName}`}</p>
+      </header>
+
+      <div style={heroBandStyle} data-testid="voi-hero-band">
+        <HeroCell
+          numeral={{
+            key: "spans",
+            label: "spans",
+            display: heroDisplay,
+            exact: heroExact,
+            color: cyan,
+          }}
+        />
+      </div>
+
+      <div style={miniStatsRowStyle}>
+        <MiniStat label="traces" value={String(session.traceCount)} />
+        <MiniStat label="last_activity" value={`${lastActivitySeconds}s ago`} />
+      </div>
+
+      <p style={summaryCommentStyle}>
+        {`// project=${session.projectName || "—"} · service=${session.serviceName}`}
+      </p>
+    </section>
+  );
+}
+
+// ===========================================================================
+// Shared cells
+// ===========================================================================
+
 interface HeroCellProps {
   numeral: HeroNumeral;
 }
@@ -161,10 +294,27 @@ interface HeroCellProps {
 function HeroCell({ numeral }: HeroCellProps) {
   return (
     <div style={heroCellStyle} data-hero-key={numeral.key}>
-      <span style={{ ...heroNumeralValueStyle, color: numeral.color }}>
-        {numeral.value}
+      <span
+        style={{ ...heroNumeralValueStyle, color: numeral.color }}
+        data-tooltip={numeral.exact}
+      >
+        {numeral.display}
       </span>
       <span style={heroNumeralLabelStyle}>{`// ${numeral.label}`}</span>
+    </div>
+  );
+}
+
+interface MiniStatProps {
+  label: string;
+  value: string;
+}
+
+function MiniStat({ label, value }: MiniStatProps) {
+  return (
+    <div style={miniStatStyle}>
+      <span style={miniStatValueStyle}>{value}</span>
+      <span style={miniStatLabelStyle}>{`// ${label}`}</span>
     </div>
   );
 }
@@ -220,7 +370,7 @@ function AttributeCard({ group, entries, onCopy }: AttributeCardProps) {
   );
 }
 
-function buildHeroNumerals(
+function buildSpanHeroNumerals(
   span: SpanRow,
   attrs: Record<string, string>,
 ): HeroNumeral[] {
@@ -232,7 +382,8 @@ function buildHeroNumerals(
   numerals.push({
     key: "duration",
     label: "duration",
-    value: formatHeroDurationMs(durationMs),
+    display: formatHeroDurationMs(durationMs),
+    exact: `${durationMs.toFixed(3)}ms`,
     color: cyan,
   });
 
@@ -246,7 +397,8 @@ function buildHeroNumerals(
     numerals.push({
       key: "input_tokens",
       label: "in_tokens",
-      value: formatHeroMagnitude(inputTokens),
+      display: formatHeroMagnitude(inputTokens),
+      exact: inputTokens.toLocaleString("en-US"),
       color: cyan,
     });
   }
@@ -261,7 +413,8 @@ function buildHeroNumerals(
     numerals.push({
       key: "output_tokens",
       label: "out_tokens",
-      value: formatHeroMagnitude(outputTokens),
+      display: formatHeroMagnitude(outputTokens),
+      exact: outputTokens.toLocaleString("en-US"),
       color: cyan,
     });
   }
@@ -274,7 +427,8 @@ function buildHeroNumerals(
     numerals.push({
       key: "cache_read_tokens",
       label: "cache_read",
-      value: formatHeroMagnitude(cacheRead),
+      display: formatHeroMagnitude(cacheRead),
+      exact: cacheRead.toLocaleString("en-US"),
       color: cyan,
     });
   }
@@ -284,7 +438,8 @@ function buildHeroNumerals(
     numerals.push({
       key: "ttft",
       label: "ttft",
-      value: formatHeroDurationMs(ttftMs),
+      display: formatHeroDurationMs(ttftMs),
+      exact: `${ttftMs.toFixed(3)}ms`,
       color: purple,
     });
   }
@@ -398,6 +553,8 @@ const heroNumeralValueStyle: CSSProperties = {
   fontWeight: 500,
   letterSpacing: "-0.02em",
   lineHeight: 1,
+  position: "relative",
+  cursor: "help",
 };
 
 const heroNumeralLabelStyle: CSSProperties = {
@@ -405,6 +562,39 @@ const heroNumeralLabelStyle: CSSProperties = {
   fontSize: "11px",
   color: "var(--text-muted)",
   letterSpacing: "0.05em",
+};
+
+const miniStatsRowStyle: CSSProperties = {
+  display: "flex",
+  gap: "24px",
+  flexWrap: "wrap",
+};
+
+const miniStatStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "2px",
+};
+
+const miniStatValueStyle: CSSProperties = {
+  fontFamily: "var(--font-numeric)",
+  fontSize: "20px",
+  color: "var(--text)",
+  lineHeight: 1,
+};
+
+const miniStatLabelStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: "10px",
+  color: "var(--text-muted)",
+  letterSpacing: "0.04em",
+};
+
+const summaryCommentStyle: CSSProperties = {
+  margin: 0,
+  fontFamily: "var(--font-mono)",
+  fontSize: "11px",
+  color: "var(--text-muted)",
 };
 
 const groupsStackStyle: CSSProperties = {

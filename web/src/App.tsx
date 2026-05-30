@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+} from "react";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { ThemePicker } from "./theme/ThemePicker";
 import { SessionSidebar } from "./components/SessionSidebar";
-import { TraceList } from "./components/TraceList";
-import { Waterfall } from "./components/Waterfall";
-import { InspectorPane } from "./components/InspectorPane";
+import { CollapsibleTraceList } from "./components/CollapsibleTraceList";
+import { WaterfallShell } from "./components/WaterfallShell";
+import { DetailsPane } from "./components/DetailsPane";
+import { LiveHistoryTabs, type TabKey } from "./components/LiveHistoryTabs";
 import { usePolledSpans } from "./lib/usePolledSpans";
 import {
   reconcileSelection,
@@ -13,6 +20,8 @@ import {
   type SpanRow,
   type TraceGroup,
 } from "./lib/grouping";
+import { filterActive } from "./lib/sessionsFilter";
+import "./app.css";
 
 export function App() {
   return (
@@ -22,19 +31,50 @@ export function App() {
   );
 }
 
+function readTabFromHash(): TabKey {
+  if (typeof window === "undefined") return "live";
+  const raw = window.location.hash.replace(/^#/, "").toLowerCase();
+  if (raw === "history") return "history";
+  return "live";
+}
+
 function Shell() {
   const { sessions, nowMs, error, loading } = usePolledSpans();
+  const [tab, setTab] = useState<TabKey>(() => readTabFromHash());
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     null,
   );
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
+  const [expandedTraceIds, setExpandedTraceIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [waterfallCollapsed, setWaterfallCollapsed] = useState<boolean>(false);
 
-  // Reconcile selection against each refresh; auto-promote first
-  // session/trace/span on initial data load so the UI is never empty when
-  // data exists.
+  // Keep the tab in sync with browser back/forward (the user may navigate
+  // via the URL bar). Hashchange fires when location.hash mutates from
+  // any source — including our own setter — so the comparison guards
+  // against a feedback loop.
   useEffect(() => {
-    if (sessions.length === 0) {
+    const onHashChange = () => {
+      const next = readTabFromHash();
+      setTab((cur) => (cur === next ? cur : next));
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const visibleSessions = useMemo<SessionGroup[]>(
+    () => (tab === "live" ? filterActive(sessions, nowMs) : sessions),
+    [tab, sessions, nowMs],
+  );
+
+  // Reconcile selection against the VISIBLE sessions set so when the user
+  // switches Live → History (or vice versa) we don't keep a selection that
+  // would render an "active" trace pane for a session that's hidden behind
+  // a filter.
+  useEffect(() => {
+    if (visibleSessions.length === 0) {
       if (selectedSessionId || selectedTraceId || selectedSpanId) {
         setSelectedSessionId(null);
         setSelectedTraceId(null);
@@ -44,7 +84,7 @@ function Shell() {
     }
 
     const reconciled = reconcileSelection(
-      sessions,
+      visibleSessions,
       selectedSessionId,
       selectedTraceId,
       selectedSpanId,
@@ -55,16 +95,14 @@ function Shell() {
     let nextSpanId = reconciled.selectedSpanId;
 
     if (!nextSessionId) {
-      nextSessionId = sessions[0]?.id ?? null;
+      nextSessionId = visibleSessions[0]?.id ?? null;
       nextTraceId = null;
       nextSpanId = null;
     }
 
-    const activeSession = sessions.find((s) => s.id === nextSessionId) ?? null;
+    const activeSession =
+      visibleSessions.find((s) => s.id === nextSessionId) ?? null;
     if (activeSession) {
-      // If the trace selection is stale (e.g. removed) OR unset, promote
-      // the most-recent trace of the active session so the middle pane
-      // is never blank when traces exist.
       if (!nextTraceId || !activeSession.traces.some((t) => t.id === nextTraceId)) {
         nextTraceId = activeSession.traces[0]?.id ?? null;
         nextSpanId = null;
@@ -91,31 +129,60 @@ function Shell() {
     if (nextSessionId !== selectedSessionId) setSelectedSessionId(nextSessionId);
     if (nextTraceId !== selectedTraceId) setSelectedTraceId(nextTraceId);
     if (nextSpanId !== selectedSpanId) setSelectedSpanId(nextSpanId);
-  }, [sessions, selectedSessionId, selectedTraceId, selectedSpanId]);
+  }, [
+    visibleSessions,
+    selectedSessionId,
+    selectedTraceId,
+    selectedSpanId,
+  ]);
 
-  // Re-clicking the currently-selected session/trace MUST be idempotent —
-  // otherwise the reconcile effect promotes descendants to first-of-list and
-  // silently drops the user's deeper pick. Only reset descendants when the
-  // selection actually changes.
-  const onSelectSession = (id: string) => {
-    if (id === selectedSessionId) return;
-    setSelectedSessionId(id);
-    setSelectedTraceId(null);
-    setSelectedSpanId(null);
-  };
-  const onSelectTrace = (id: string) => {
-    if (id === selectedTraceId) return;
-    setSelectedTraceId(id);
-    setSelectedSpanId(null);
-  };
-  const onSelectSpan = (id: string) => {
-    if (id === selectedSpanId) return;
-    setSelectedSpanId(id);
-  };
+  const onSelectSession = useCallback(
+    (id: string) => {
+      if (id === selectedSessionId) return;
+      setSelectedSessionId(id);
+      setSelectedTraceId(null);
+      setSelectedSpanId(null);
+    },
+    [selectedSessionId],
+  );
+  const onSelectTrace = useCallback(
+    (id: string) => {
+      if (id === selectedTraceId) return;
+      setSelectedTraceId(id);
+      setSelectedSpanId(null);
+    },
+    [selectedTraceId],
+  );
+  const onSelectSpan = useCallback(
+    (id: string) => {
+      if (id === selectedSpanId) return;
+      setSelectedSpanId(id);
+    },
+    [selectedSpanId],
+  );
+  const onToggleExpand = useCallback((traceId: string) => {
+    setExpandedTraceIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(traceId)) next.delete(traceId);
+      else next.add(traceId);
+      return next;
+    });
+  }, []);
+
+  const onTabChange = useCallback((next: TabKey) => {
+    setTab(next);
+    if (typeof window !== "undefined") {
+      const desired = `#${next}`;
+      if (window.location.hash !== desired) {
+        // Use replaceState so tab toggles don't bloat the back-stack.
+        window.history.replaceState(null, "", desired);
+      }
+    }
+  }, []);
 
   const activeSession: SessionGroup | null = useMemo(
-    () => sessions.find((s) => s.id === selectedSessionId) ?? null,
-    [sessions, selectedSessionId],
+    () => visibleSessions.find((s) => s.id === selectedSessionId) ?? null,
+    [visibleSessions, selectedSessionId],
   );
   const activeTrace: TraceGroup | null = useMemo(
     () => activeSession?.traces.find((t) => t.id === selectedTraceId) ?? null,
@@ -126,49 +193,51 @@ function Shell() {
     return activeTrace.spans.find((s) => spanRowId(s) === selectedSpanId) ?? null;
   }, [activeTrace, selectedSpanId]);
 
-  const totalSpans = useMemo(
-    () => sessions.reduce((acc, s) => acc + s.spanCount, 0),
-    [sessions],
-  );
-
-  const subtitle = buildSubtitle({
-    loading,
-    error,
-    sessionCount: sessions.length,
-    totalSpans,
-  });
-
   const sidebarEmpty = loading
     ? "// awaiting spans from ClickHouse..."
     : error
       ? `// ClickHouse error: ${error}`
-      : "// no spans yet · run cc-launch.sh to emit one";
+      : tab === "live"
+        ? "// no active sessions · switch to History for older"
+        : "// no spans yet · run cc-launch.sh to emit one";
 
   return (
-    <div style={shellStyle}>
+    <div className="voi-app">
       <header style={headerStyle}>
         <div style={titleColumnStyle}>
           <h1 style={titleStyle}>agent-observability</h1>
-          <p style={subtitleStyle}>{subtitle}</p>
+          <p style={subtitleStyle}>{buildSubtitle({ loading, error, tab, activeCount: filterActive(sessions, nowMs).length, totalCount: sessions.length })}</p>
         </div>
-        <ThemePicker />
+        <div style={headerControlsStyle}>
+          <LiveHistoryTabs
+            active={tab}
+            onChange={onTabChange}
+            activeCount={filterActive(sessions, nowMs).length}
+            totalCount={sessions.length}
+          />
+          <ThemePicker />
+        </div>
       </header>
 
-      <main className="voi-pane-grid">
+      <main className="voi-top-row" id="voi-sessions-panel">
         <div style={paneContainerStyle}>
           <SessionSidebar
-            sessions={sessions}
+            sessions={visibleSessions}
             selectedSessionId={selectedSessionId}
             onSelect={onSelectSession}
             nowMs={nowMs}
             emptyMessage={sidebarEmpty}
           />
         </div>
-        <div style={{ ...paneContainerStyle, ...verticalRuleStyle }}>
-          <TraceList
+        <div style={paneContainerStyle}>
+          <CollapsibleTraceList
             traces={activeSession?.traces ?? []}
             selectedTraceId={selectedTraceId}
-            onSelect={onSelectTrace}
+            selectedSpanId={selectedSpanId}
+            expandedTraceIds={expandedTraceIds}
+            onSelectTrace={onSelectTrace}
+            onSelectSpan={onSelectSpan}
+            onToggleExpand={onToggleExpand}
             emptyMessage={
               activeSession
                 ? "// no traces in this session"
@@ -176,25 +245,33 @@ function Shell() {
             }
           />
         </div>
-        <div style={{ ...paneContainerStyle, ...verticalRuleStyle }}>
-          <div style={spansHalfStyle}>
-            <Waterfall
-              spans={activeTrace?.spans ?? []}
-              selectedSpanId={selectedSpanId}
-              onSelect={onSelectSpan}
-              nowMs={nowMs}
-              emptyMessage={
-                activeTrace
-                  ? "// no spans in this trace"
-                  : "// select a trace to load its waterfall"
-              }
-            />
-          </div>
-          <div style={inspectorHalfStyle}>
-            <InspectorPane span={activeSpan} />
-          </div>
+        <div style={paneContainerStyle}>
+          <DetailsPane
+            span={activeSpan}
+            trace={activeTrace}
+            session={activeSession}
+            nowMs={nowMs}
+          />
         </div>
       </main>
+
+      <section
+        className={`voi-waterfall-row${waterfallCollapsed ? " is-collapsed" : ""}`}
+        aria-label="Waterfall row"
+      >
+        <WaterfallShell
+          spans={activeTrace?.spans ?? []}
+          selectedSpanId={selectedSpanId}
+          onSelect={onSelectSpan}
+          nowMs={nowMs}
+          emptyMessage={
+            activeTrace
+              ? "// no spans in this trace"
+              : "// select a trace to load its waterfall"
+          }
+          onCollapsedChange={setWaterfallCollapsed}
+        />
+      </section>
     </div>
   );
 }
@@ -202,43 +279,35 @@ function Shell() {
 interface SubtitleInputs {
   loading: boolean;
   error: string | null;
-  sessionCount: number;
-  totalSpans: number;
+  tab: TabKey;
+  activeCount: number;
+  totalCount: number;
 }
 
-function buildSubtitle({
-  loading,
-  error,
-  sessionCount,
-  totalSpans,
-}: SubtitleInputs): string {
+function buildSubtitle({ loading, error, tab, activeCount, totalCount }: SubtitleInputs): string {
   if (loading) return "// awaiting spans from ClickHouse...";
   if (error) return `// ClickHouse error: ${error}`;
-  return `// ${sessionCount} sessions · ${totalSpans} spans`;
+  if (tab === "live") {
+    return `// live · ${activeCount} of ${totalCount} sessions active`;
+  }
+  return `// history · ${totalCount} sessions`;
 }
-
-const shellStyle: CSSProperties = {
-  minHeight: "100vh",
-  display: "flex",
-  flexDirection: "column",
-  background: "var(--bg)",
-  color: "var(--text)",
-};
 
 const headerStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
   gap: "16px",
-  padding: "16px 24px",
+  padding: "12px 24px",
   borderBottom: "1px solid var(--border-base)",
   flexWrap: "wrap",
+  background: "var(--surface)",
 };
 
 const titleColumnStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: "4px",
+  gap: "2px",
 };
 
 const titleStyle: CSSProperties = {
@@ -256,34 +325,16 @@ const subtitleStyle: CSSProperties = {
   color: "var(--text-muted)",
 };
 
-// Grid layout lives in app.css under .voi-pane-grid so the responsive
-// media queries (≤900px tighter tracks; ≤600px stacked) can co-locate
-// with the layout — CSSProperties cannot carry @media.
+const headerControlsStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "12px",
+  flexWrap: "wrap",
+};
 
 const paneContainerStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   minHeight: 0,
   overflow: "hidden",
-};
-
-const verticalRuleStyle: CSSProperties = {
-  borderLeft: "1px solid var(--border-base)",
-};
-
-const spansHalfStyle: CSSProperties = {
-  flex: 1,
-  minHeight: 0,
-  overflow: "hidden",
-  display: "flex",
-  flexDirection: "column",
-};
-
-const inspectorHalfStyle: CSSProperties = {
-  flex: 1,
-  minHeight: 0,
-  overflow: "hidden",
-  display: "flex",
-  flexDirection: "column",
-  borderTop: "1px solid var(--border-base)",
 };

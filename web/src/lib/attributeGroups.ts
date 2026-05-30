@@ -61,7 +61,9 @@ const IDENTITY_EXACT = new Set([
   "organization.id",
   "TraceId",
   "SpanId",
-  "user.id",
+  // `user.id` previously listed here, but the hidden-keys filter drops the
+  // entire user.* namespace before bucketing — keeping it here would have
+  // no effect but is misleading.
 ]);
 
 const ENVIRONMENT_EXACT = new Set([
@@ -158,6 +160,24 @@ export function groupForKey(key: string): AttributeGroupName {
   return OTHER_GROUP.name;
 }
 
+/*
+ * Hidden attribute keys — filtered out before bucketing. The set is small
+ * + curated (PII / operator-environment leakage we never want to surface
+ * in the inspector). Applied at the renderer boundary so all groups
+ * (REQUEST / RESPONSE / IDENTITY / ENVIRONMENT / OTHER) drop them.
+ *
+ *  - /^user\./ — `user.email`, `user.id`, `user.account_uuid`, etc.
+ *  - `project.path` exact — absolute filesystem paths leak local layout.
+ *
+ * If the list grows past a handful, refactor to a per-key matcher (regex
+ * or function) so the filter stays grep-able.
+ */
+export function isHiddenAttributeKey(key: string): boolean {
+  if (key === "project.path") return true;
+  if (key.startsWith("user.")) return true;
+  return false;
+}
+
 export interface GroupedAttributes {
   group: AttributeGroup;
   entries: Array<[string, string]>;
@@ -168,6 +188,9 @@ export interface GroupedAttributes {
  * Entries inside each group are sorted alphabetically by key for stable
  * rendering (the UI must not reshuffle between renders of the same span).
  * OTHER is always last and is included only when non-empty.
+ *
+ * Hidden keys (see isHiddenAttributeKey) are dropped before bucketing so
+ * no group surface ever renders `user.*` or `project.path`.
  */
 export function groupAttributes(
   attributes: Record<string, string>,
@@ -178,7 +201,9 @@ export function groupAttributes(
   }
   buckets.set(OTHER_GROUP.name, []);
 
-  const sortedKeys = Object.keys(attributes).sort();
+  const sortedKeys = Object.keys(attributes)
+    .filter((k) => !isHiddenAttributeKey(k))
+    .sort();
   for (const key of sortedKeys) {
     const name = groupForKey(key);
     buckets.get(name)!.push([key, attributes[key]!]);

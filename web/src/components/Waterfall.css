@@ -52,11 +52,25 @@
 }
 
 .voi-waterfall-label {
-  fill: var(--text);
+  /* fill is set inline via bestContrastTextOn — DO NOT set a default here,
+   * the inline style is the source of truth for contrast against the bar's
+   * family color. */
   font-family: var(--font-mono);
   font-size: 11px;
   pointer-events: none;
   /* NO glow on labels per cyberpunk § "Pitfalls: Label glow". */
+  filter: none;
+}
+
+.voi-waterfall-subagent {
+  /* Subagent suffix tag — same family color as the bar (set inline), smaller
+   * size, reduced opacity so it doesn't compete with the main label. */
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  pointer-events: none;
   filter: none;
 }
 

@@ -1,8 +1,12 @@
 /*
- * InspectorPane.css — supports hover-reveal copy-to-clipboard glyph on
- * identity rows. The glyph stays hidden until the row is hovered or
- * focused; click writes to clipboard + shows a 1.5s toast (toast positioning
- * is inline-styled in the component).
+ * DetailsPane.css — supports hover-reveal copy-to-clipboard glyph on
+ * IDENTITY rows. The glyph stays hidden until the row is hovered or
+ * focused; click writes to clipboard + shows a 1.5s toast (toast
+ * positioning is inline-styled in the component).
+ *
+ * Renamed from InspectorPane.css (VOI-346) — the DOM class names stay
+ * `voi-inspector-*` to avoid a churn-only diff in the markup; the file
+ * sits alongside DetailsPane.tsx so co-located edits are obvious.
  */
 
 .voi-inspector-row {
