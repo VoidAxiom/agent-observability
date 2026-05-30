@@ -312,19 +312,20 @@ function buildLayout(
       visibleWidth = Math.max(MIN_BAR_WIDTH, innerWidth - rawX);
     }
     const endMs = startMs + span.Duration / 1_000_000;
-    // Running predicate has two valid signals:
-    //   (a) OTel canonical: Duration === 0 means end_time hasn't been
-    //       set yet (in-flight span). This is unambiguous.
-    //   (b) Heuristic fallback: StatusCode is UNSET AND endMs is
-    //       close to nowMs. The 5-second cadence is the polling
-    //       window, so spans whose snapshot endMs lags by up to 5s
-    //       could still be in flight; using `> nowMs - 5000` matches
-    //       the polling interval and avoids the round-5 false-negative
-    //       on slow heartbeats (codex P1 2026-05-30). False positives
-    //       are bounded to the same 5-second window after completion.
+    // Running predicate. Both branches REQUIRE StatusCode UNSET — a span
+    // with OK/ERROR has finished, period. The OTel-canonical "Duration
+    // === 0 means in-flight" signal only holds when paired with UNSET;
+    // otherwise it false-positives on legitimately-zero-duration
+    // completed spans (instantaneous OK spans, malformed Duration coerced
+    // to 0). Codex round-6 P2 2026-05-30.
+    //
+    //   (a) Duration === 0 + UNSET: in-flight (end_time hasn't been set).
+    //   (b) Duration > 0 + UNSET + endMs is fresh (within 5s polling
+    //       window): could still be in flight; snapshot may lag. False
+    //       positives bounded to the polling interval after completion.
     const isRunning =
-      span.Duration === 0 ||
-      (isStatusUnset(span.StatusCode) && endMs > nowMs - 5000);
+      isStatusUnset(span.StatusCode) &&
+      (span.Duration === 0 || endMs > nowMs - 5000);
     // Lane index = position in `bars`, NOT the source spans-array index.
     // A dropped span (unparseable Timestamp) would otherwise leave a
     // phantom empty lane where its source index would have sat.
@@ -749,12 +750,20 @@ function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
         duration: 0.6,
         ease: "power2.out",
         onComplete: () => {
+          // Detached-path replay path: if the user navigated to a
+          // different trace mid-sweep, the path was unmounted before
+          // the tween finished. The user never saw the dopamine moment,
+          // so we MUST NOT mark celebrated AND we MUST drop the
+          // mount-local entry — otherwise a return to the same trace
+          // in this same Waterfall mount finds the key in
+          // sweptThisMountRef, skips re-launching, and renders the
+          // freshly-mounted path stuck at data-state="sweep" with no
+          // tween. Codex round-6 P1 2026-05-30.
+          if (!path.isConnected) {
+            sweptThisMountRef.current.delete(edge.key);
+            return;
+          }
           sweptThisMountRef.current.set(edge.key, "done");
-          // Guard against unmount: the path may have been detached if the
-          // user navigated away mid-sweep. isConnected returns false for a
-          // detached node; in that case do NOT mark celebrated — the user
-          // never saw the dopamine moment, let it play next time.
-          if (!path.isConnected) return;
           path.setAttribute("data-state", "settled");
           path.removeAttribute("stroke-dasharray");
           path.removeAttribute("stroke-dashoffset");
