@@ -1,9 +1,14 @@
 /*
  * tabs — pins LiveHistoryTabs UI + URL hash sync + filterActive behavior.
- *  - Click History → tab aria-selected=true on History, URL hash becomes
- *    `#history`.
+ *  - Click History → aria-current="page" on History, URL hash → `#history`.
  *  - filterActive only retains sessions whose activityStatus === 'active'
  *    (5-minute window via lastActivity timestamp + nowMs).
+ *
+ * Note (codex round-5 P1 2026-05-30): LiveHistoryTabs is deliberately
+ * NOT a WAI-ARIA tablist — see the component's file header. The single-
+ * select semantic uses aria-current="page" matching session/trace/span
+ * rows, not role=tab/aria-selected (which would obligate full arrow-key
+ * navigation + roving tabIndex + a role=tabpanel target).
  */
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -54,35 +59,45 @@ afterEach(() => {
 });
 
 describe("LiveHistoryTabs", () => {
-  it("clicking History activates the History tab and writes #history to the URL hash", () => {
+  it("clicking History activates the History button and writes #history to the URL hash", () => {
     render(<TabsHarness initial="live" />);
-    const liveBtn = screen.getByRole("tab", { name: /Live/ });
-    const historyBtn = screen.getByRole("tab", { name: /History/ });
-    expect(liveBtn.getAttribute("aria-selected")).toBe("true");
-    expect(historyBtn.getAttribute("aria-selected")).toBe("false");
+    const liveBtn = screen.getByRole("button", { name: /Live/ });
+    const historyBtn = screen.getByRole("button", { name: /History/ });
+    expect(liveBtn.getAttribute("aria-current")).toBe("page");
+    expect(historyBtn.getAttribute("aria-current")).toBeNull();
 
     fireEvent.click(historyBtn);
 
-    expect(liveBtn.getAttribute("aria-selected")).toBe("false");
-    expect(historyBtn.getAttribute("aria-selected")).toBe("true");
+    expect(liveBtn.getAttribute("aria-current")).toBeNull();
+    expect(historyBtn.getAttribute("aria-current")).toBe("page");
     expect(window.location.hash).toBe("#history");
   });
 
-  it("clicking Live activates the Live tab", () => {
+  it("clicking Live activates the Live button", () => {
     render(<TabsHarness initial="history" />);
-    const liveBtn = screen.getByRole("tab", { name: /Live/ });
-    expect(liveBtn.getAttribute("aria-selected")).toBe("false");
+    const liveBtn = screen.getByRole("button", { name: /Live/ });
+    expect(liveBtn.getAttribute("aria-current")).toBeNull();
     fireEvent.click(liveBtn);
-    expect(liveBtn.getAttribute("aria-selected")).toBe("true");
+    expect(liveBtn.getAttribute("aria-current")).toBe("page");
     expect(window.location.hash).toBe("#live");
   });
 
-  it("each tab carries a data-tooltip with its explanatory hint", () => {
+  it("each button carries a data-tooltip with its explanatory hint", () => {
     render(<TabsHarness initial="live" />);
-    const liveBtn = screen.getByRole("tab", { name: /Live/ });
-    const historyBtn = screen.getByRole("tab", { name: /History/ });
+    const liveBtn = screen.getByRole("button", { name: /Live/ });
+    const historyBtn = screen.getByRole("button", { name: /History/ });
     expect(liveBtn.getAttribute("data-tooltip")).toContain("5-min");
     expect(historyBtn.getAttribute("data-tooltip")).toContain("all sessions");
+  });
+
+  it("renders as a <nav> (button group) — NOT a WAI-ARIA tablist", () => {
+    // Asserting the architectural decision so a future contributor
+    // doesn't reintroduce role=tab/aria-selected without the matching
+    // arrow-key + roving-tabIndex contract.
+    render(<TabsHarness initial="live" />);
+    expect(document.querySelector('[role="tablist"]')).toBeNull();
+    expect(document.querySelectorAll('[role="tab"]').length).toBe(0);
+    expect(document.querySelector('nav[aria-label="Sessions filter"]')).not.toBeNull();
   });
 });
 

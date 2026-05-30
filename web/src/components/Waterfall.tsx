@@ -312,8 +312,19 @@ function buildLayout(
       visibleWidth = Math.max(MIN_BAR_WIDTH, innerWidth - rawX);
     }
     const endMs = startMs + span.Duration / 1_000_000;
+    // Running predicate has two valid signals:
+    //   (a) OTel canonical: Duration === 0 means end_time hasn't been
+    //       set yet (in-flight span). This is unambiguous.
+    //   (b) Heuristic fallback: StatusCode is UNSET AND endMs is
+    //       close to nowMs. The 5-second cadence is the polling
+    //       window, so spans whose snapshot endMs lags by up to 5s
+    //       could still be in flight; using `> nowMs - 5000` matches
+    //       the polling interval and avoids the round-5 false-negative
+    //       on slow heartbeats (codex P1 2026-05-30). False positives
+    //       are bounded to the same 5-second window after completion.
     const isRunning =
-      isStatusUnset(span.StatusCode) && endMs > nowMs - 1000;
+      span.Duration === 0 ||
+      (isStatusUnset(span.StatusCode) && endMs > nowMs - 5000);
     // Lane index = position in `bars`, NOT the source spans-array index.
     // A dropped span (unparseable Timestamp) would otherwise leave a
     // phantom empty lane where its source index would have sat.
@@ -603,17 +614,21 @@ function computeTickPositions(durationMs: number): TickPos[] {
       break;
     }
   }
-  const minorStep = majorStep / 5;
+  const MINORS_PER_MAJOR = 5;
+  const minorStep = majorStep / MINORS_PER_MAJOR;
   const ticks: TickPos[] = [];
-  let cursor = 0;
-  // Avoid runaway loops on degenerate inputs.
+  // Iterate by integer index to avoid IEEE-754 drift from repeatedly
+  // adding minorStep — `cursor % majorStep` would misclassify majors at
+  // multiples beyond the first whenever minorStep is non-integer (e.g.
+  // majorStep=2ms, minorStep=0.4ms). Index-derived ms is exact for the
+  // first minor and accumulates only one float multiplication per tick,
+  // and the major test is an integer modulo. Codex round-5 P1
+  // 2026-05-30.
   const maxIterations = 2000;
-  let iterations = 0;
-  while (cursor <= durationMs && iterations < maxIterations) {
-    const isMajor = Math.abs(cursor % majorStep) < 1e-6;
-    ticks.push({ ms: cursor, major: isMajor });
-    cursor += minorStep;
-    iterations += 1;
+  for (let i = 0; i < maxIterations; i += 1) {
+    const ms = i * minorStep;
+    if (ms > durationMs + 1e-9) break;
+    ticks.push({ ms, major: i % MINORS_PER_MAJOR === 0 });
   }
   return ticks;
 }

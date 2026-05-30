@@ -12,10 +12,18 @@
  *    click the parent writes it via setter callback.
  *
  * A11y:
- *  - role=tablist + role=tab + aria-selected. Buttons are real <button>,
- *    keyboard arrows handled by native focus order (Tab/Shift-Tab); Enter
- *    + Space activate via default button semantics.
- *  - data-tooltip on each tab carries the explanatory hint.
+ *  - This is intentionally NOT a WAI-ARIA tablist. The full tablist
+ *    pattern requires arrow-key navigation + roving tabIndex + a
+ *    role=tabpanel target — we don't want any of those obligations
+ *    here (the panel is the entire `<main>` landmark, not a dedicated
+ *    tabpanel; and the tab strip lives in the page header where users
+ *    expect Tab/Shift-Tab traversal). Codex round-5 P1 2026-05-30
+ *    correctly flagged the old role=tab + aria-controls=<main>
+ *    combination as malformed.
+ *  - Instead: real <button>s in a <nav aria-label=...>; the active
+ *    button carries aria-current="page" (the single-select semantic
+ *    used everywhere else in this UI). Enter + Space activate via
+ *    default button semantics. data-tooltip on each carries the hint.
  */
 
 import { type CSSProperties } from "react";
@@ -36,7 +44,7 @@ export function LiveHistoryTabs({
   totalCount,
 }: LiveHistoryTabsProps) {
   return (
-    <div role="tablist" aria-label="Sessions filter" style={tablistStyle}>
+    <nav aria-label="Sessions filter" style={tablistStyle}>
       <TabButton
         tab="live"
         active={active === "live"}
@@ -53,7 +61,7 @@ export function LiveHistoryTabs({
         count={totalCount}
         tooltip="all sessions, no filter"
       />
-    </div>
+    </nav>
   );
 }
 
@@ -70,9 +78,10 @@ function TabButton({ tab, active, onClick, label, count, tooltip }: TabButtonPro
   return (
     <button
       type="button"
-      role="tab"
-      aria-selected={active}
-      aria-controls="voi-sessions-panel"
+      // aria-current="page" is the WAI-ARIA single-select semantic for
+      // navigation buttons; same family used on session/trace/span rows.
+      // No role=tab, no aria-controls — see file header.
+      aria-current={active ? "page" : undefined}
       data-tab={tab}
       data-active={active ? "true" : "false"}
       data-tooltip={tooltip}

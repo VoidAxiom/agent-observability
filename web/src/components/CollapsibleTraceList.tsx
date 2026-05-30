@@ -13,6 +13,7 @@
  */
 
 import { type CSSProperties } from "react";
+import { formatHeroDurationMs } from "../lib/formatHero";
 import type { SpanRow, TraceGroup } from "../lib/grouping";
 import { spanRowId } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
@@ -115,7 +116,9 @@ function TraceItem({
     borderRadius: "var(--radius-sm)",
     padding: "6px 10px 6px 8px",
     listStyle: "none",
-    cursor: "pointer",
+    // No cursor here — the outer <div> has no onClick. The inner chevron
+    // + label buttons set their own cursor. Codex round-5 P1 2026-05-30
+    // (dead click zone between the two inner buttons).
     fontFamily: "var(--font-body)",
     display: "flex",
     alignItems: "center",
@@ -183,7 +186,7 @@ function TraceItem({
           <span style={mainStyle}>
             <span style={labelStyle}>{trace.displayLabel}</span>
             <span style={metaStyle}>
-              {`// ${trace.spanCount} spans · ${trace.durationSeconds.toFixed(3)}s`}
+              {`// ${trace.spanCount} spans · ${formatHeroDurationMs(trace.durationSeconds * 1000)}`}
             </span>
           </span>
         </button>

@@ -39,15 +39,17 @@ function loadFromStorage(): Set<string> {
   }
 }
 
-function saveToStorage(celebrated: Set<string>): void {
-  if (typeof window === "undefined") return;
+/**
+ * Persist `celebrated` to localStorage, unioning with whatever's already
+ * there so two tabs don't overwrite each other's celebrations. Returns
+ * the merged set so the caller can adopt it without a second read
+ * (eliminates the N×getItem+parse cascade markCelebrated used to do per
+ * onComplete tween — codex round-5 P1 2026-05-30). When storage is
+ * unavailable (private mode, SSR), returns the input unchanged.
+ */
+function saveToStorage(celebrated: Set<string>): Set<string> {
+  if (typeof window === "undefined") return celebrated;
   try {
-    // Cross-tab safety: read the current persisted set and UNION with the
-    // in-memory set before writing. Without this, Tab A's `{E1}` write
-    // would be overwritten by Tab B's later `{E2}` write — both tabs
-    // would re-celebrate the lost edge on next reload, breaking the
-    // "exactly ONCE per browser profile" contract in the file header.
-    // Codex round-4 P1 2026-05-30.
     const merged = new Set<string>(celebrated);
     const raw = window.localStorage?.getItem(STORAGE_KEY);
     if (raw) {
@@ -65,8 +67,10 @@ function saveToStorage(celebrated: Set<string>): void {
       }
     }
     window.localStorage?.setItem(STORAGE_KEY, JSON.stringify(Array.from(merged)));
+    return merged;
   } catch {
     // private mode / unavailable storage — best-effort.
+    return celebrated;
   }
 }
 
@@ -122,14 +126,14 @@ export const useCrossProcessStore = create<CrossProcessState>((set, get) => ({
     if (current.has(edgeKey)) return;
     const next = new Set(current);
     next.add(edgeKey);
-    // Persist FIRST (with cross-tab union) — then read back the merged
-    // storage state into memory so other tabs' celebrations land in our
-    // set immediately, not only on the next `storage` event tick.
-    saveToStorage(next);
-    const merged = loadFromStorage();
-    // Belt-and-suspenders: ensure the just-added edge is present even if
-    // a hostile localStorage layer silently discarded the write.
-    merged.add(edgeKey);
+    // Single getItem+setItem per call (saveToStorage merges + returns the
+    // union). Previously we ALSO called loadFromStorage right after for
+    // belt-and-suspenders, which doubled the synchronous storage reads
+    // during the GSAP onComplete cascade. Codex round-5 P1 2026-05-30.
+    const merged = saveToStorage(next);
+    // saveToStorage already added edgeKey via the input set; the only
+    // case it could miss is when storage is unavailable AND merged is
+    // the same reference as `next`. In both branches edgeKey is present.
     set({ celebrated: merged, hydrated: true });
   },
   reset: () => {

@@ -40,13 +40,23 @@ export function subagentType(span: SpanRow): string {
  * Pull the agent_id / parent_agent_id pair for the tooltip body. Empty
  * strings are returned when missing — the caller can render `…` or skip
  * the line.
+ *
+ * The static type says Record<string, string>, but a misbehaving SDK
+ * can emit a numeric or null payload; calling `.trim()` on a number
+ * would throw TypeError and crash the trace-list render. Mirror the
+ * `typeof === "string"` guard the sibling helpers already use. Codex
+ * round-5 P0 2026-05-30.
  */
+function coerceAttr(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 export function subagentIds(span: SpanRow): {
   agentId: string;
   parentAgentId: string;
 } {
   return {
-    agentId: (span.SpanAttributesRaw.agent_id ?? "").trim(),
-    parentAgentId: (span.SpanAttributesRaw.parent_agent_id ?? "").trim(),
+    agentId: coerceAttr(span.SpanAttributesRaw.agent_id),
+    parentAgentId: coerceAttr(span.SpanAttributesRaw.parent_agent_id),
   };
 }
