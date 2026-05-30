@@ -181,8 +181,7 @@ otelcol-contrib validate --config collector/config.yaml
 # ClickHouse schema (clickhouse/**):
 clickhouse-client -h localhost --multiquery --queries-file clickhouse/schema.sql
 
-# SwiftUI app (app/**):
-xcodebuild test -scheme AgentObservability -destination 'platform=macOS'
+# Web UI (web/**) — handled by ui-implementer, not generic implementer.
 
 # Launch-wrapper shell scripts (bin/**):
 bash scripts/check-shell-syntax.sh bin/<script>.sh

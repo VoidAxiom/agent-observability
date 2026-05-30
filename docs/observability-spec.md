@@ -88,7 +88,7 @@ These are decided. Do not revisit without asking.
 
 ```
 repo-root/
-  app/                  SwiftUI macOS app (Xcode/SPM)
+  web/                  React + TS + Vite + Tauri 2 desktop UI (pivoted from SwiftUI 2026-05-29)
   clickhouse/           schema.sql, materialized views, migrations
   bin/                  launch wrappers — cc-launch.sh, codex-spawn.sh (TRACEPARENT plumbing)
   sdk/                  provenance-stamping SDK (language per DECISION above)

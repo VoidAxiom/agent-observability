@@ -16,10 +16,11 @@ You are the **director**, not the coder. `hooks/write-scope-guard.mjs`
 denies you `Edit | Write | MultiEdit` on anything outside Claude's
 exclusive territory (`.claude/**`, `.codex/**`, `hooks/**`, `docs/**`,
 `**/*.md`, `architecture/**`, `.understand-anything/**`, `scripts/**`,
-`**/*.test.*`, `.gitignore`). Code changes (anything in `app/`,
-`clickhouse/`, `bin/`, `sdk/`, `collector/`, `config/`) go through the
-`implementer` subagent, which runs in its own worktree and dispatches
-`codex exec` workers.
+`**/*.test.*`, `.gitignore`). Code changes in `clickhouse/`, `bin/`,
+`sdk/`, `collector/`, `config/` go through the `implementer` subagent
+(which dispatches `codex exec`); code changes in `web/` go through the
+`ui-implementer` subagent (which writes directly per the operator-
+ratified doctrine override). Both run in their own worktrees.
 
 Steps:
 

@@ -125,18 +125,6 @@ else
        "'brew install --cask clickhouse-client'"
 fi
 
-# -- OPTIONAL: M4 SwiftUI app -------------------------------------------------
-
-# xcodebuild — required for app/ packets (VOI-309, VOI-312, VOI-314, M4 packets).
-# Soft for M0 dev boxes that aren't building the app yet.
-if command -v xcodebuild >/dev/null 2>&1; then
-  xc_ver="$(xcodebuild -version 2>/dev/null | head -1 | awk '{print $2}')"
-  pass "xcodebuild $xc_ver"
-else
-  soft "xcodebuild (Xcode / Command Line Tools) — needed for VOI-309 onwards (the SwiftUI app)" \
-       "'xcode-select --install' or install full Xcode from the App Store"
-fi
-
 # -- OPTIONAL: collector binary mode + load testing ---------------------------
 
 # otelcol-contrib — used by collector/ (VOI-307). Optional because the

@@ -76,7 +76,7 @@ const UI_IMPL_PREFIXES = ['web']
 // single-file entries (e.g. `src/index.css`) are also supported — entries
 // without a trailing `/` or `/**` are treated as exact file paths. Ignored
 // at runtime when SCOPE_MODE === 'blocklist'.
-const IMPL_SCOPE_RAW = "sdk/** collector/** clickhouse/** bin/** app/** config/**"
+const IMPL_SCOPE_RAW = "sdk/** collector/** clickhouse/** bin/** config/**"
 const _scopeEntries = IMPL_SCOPE_RAW.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
 const IMPL_PREFIXES = []
 const IMPL_FILES = []
