@@ -69,6 +69,13 @@ interface BarLayout {
   accent: string;
   ancestors: Set<string>;
   isRunning: boolean;
+  /**
+   * True when the span's Timestamp couldn't be parsed and the bar is
+   * a synthetic minimum-width fallback so the row stays selectable
+   * (matching CollapsibleTraceList row count). Codex round-4 P1
+   * 2026-05-30.
+   */
+  noTimestamp: boolean;
 }
 
 interface CrossEdge {
@@ -267,6 +274,13 @@ function buildLayout(
   }
 
   const bars: BarLayout[] = [];
+  // Pass 1: render every span with a parseable Timestamp at its real X.
+  // Pass 2 (below the forEach) emits a fallback "no-timestamp" bar for
+  // every dropped span so the click-to-select contract from the trace
+  // list stays bidirectional — without this, a malformed-Timestamp span
+  // would appear in CollapsibleTraceList (which iterates trace.spans
+  // unconditionally) but be unreachable from the waterfall. Codex
+  // round-4 P1 2026-05-30.
   spans.forEach((span) => {
     const id = spanRowId(span);
     const startMs = starts.get(id);
@@ -312,8 +326,36 @@ function buildLayout(
       accent,
       ancestors: ancestorChain.get(id) ?? new Set(),
       isRunning,
+      noTimestamp: false,
     });
   });
+
+  // Fallback pass for spans whose Timestamp failed to parse — render a
+  // minimum-width bar at x=0 so the row is still clickable and the bar
+  // count matches CollapsibleTraceList. data-no-timestamp="true" gives
+  // the consumer a hook for a tooltip + reduced-opacity treatment so
+  // the operator can tell at a glance that the bar's geometry is
+  // synthetic. Lane index continues from the valid-bar count.
+  for (const span of spans) {
+    const id = spanRowId(span);
+    if (starts.has(id)) continue;
+    const family = spanNameToFamily(span.SpanName);
+    const accent = familyToAccentVar(family);
+    const laneIndex = bars.length;
+    bars.push({
+      span,
+      spanId: id,
+      rowIndex: laneIndex,
+      x: LEFT_GUTTER,
+      y: TIME_AXIS_HEIGHT + laneIndex * ROW_HEIGHT + BAR_Y_OFFSET,
+      width: MIN_BAR_WIDTH,
+      family,
+      accent,
+      ancestors: ancestorChain.get(id) ?? new Set(),
+      isRunning: false,
+      noTimestamp: true,
+    });
+  }
 
   // Cross-process edges: parent span has different ServiceName than child
   // span and BOTH are present in the waterfall.
@@ -328,6 +370,10 @@ function buildLayout(
     const parentBar = barBySpanId.get(parentSpanId);
     if (!parentBar) continue;
     if (parentBar.span.ServiceName === b.span.ServiceName) continue;
+    // Skip cross-edges touching a synthetic no-timestamp bar — its X is
+    // a fallback, not a real start, so the ligature would point at the
+    // wrong column. Codex round-4 P1 2026-05-30.
+    if (parentBar.noTimestamp || b.noTimestamp) continue;
     const x1 = parentBar.x + parentBar.width;
     const y1 = parentBar.y + BAR_HEIGHT / 2;
     const x2 = b.x;
@@ -402,6 +448,13 @@ function WaterfallBar({
   const labelColorVar = bestContrastTextOn(bar.accent);
   const labelFill = `var(${labelColorVar})`;
 
+  const titleText = bar.noTimestamp
+    ? `${label} — no timestamp (rendered as synthetic minimum-width bar)`
+    : label;
+  const ariaLabel = bar.noTimestamp
+    ? `${bar.span.SpanName} — depth ${bar.span.depth} — no timestamp`
+    : `${bar.span.SpanName} — depth ${bar.span.depth}`;
+
   return (
     <g
       data-span-id={bar.spanId}
@@ -409,6 +462,7 @@ function WaterfallBar({
       data-row-index={bar.rowIndex}
       data-selected={selected ? "true" : "false"}
       data-subagent={sub ? "true" : "false"}
+      data-no-timestamp={bar.noTimestamp ? "true" : "false"}
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
       onFocus={onHoverStart}
@@ -422,12 +476,14 @@ function WaterfallBar({
       }}
       tabIndex={0}
       role="button"
-      aria-label={`${bar.span.SpanName} — depth ${bar.span.depth}`}
-      aria-pressed={selected}
+      aria-label={ariaLabel}
+      // Single-select semantic — aria-current, not aria-pressed. Codex
+      // round-4 P1 2026-05-30.
+      aria-current={selected ? "true" : undefined}
       style={{ cursor: "pointer", outline: "none" }}
     >
       {/* Native SVG tooltip with full span name (no truncation). */}
-      <title>{label}</title>
+      <title>{titleText}</title>
       <rect
         className="voi-waterfall-bar"
         x={bar.x}

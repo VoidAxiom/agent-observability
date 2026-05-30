@@ -177,7 +177,10 @@ function SessionRow({ session, selected, onSelect, nowMs }: SessionRowProps) {
       <button
         type="button"
         onClick={() => onSelect(session.id)}
-        aria-pressed={selected}
+        // Single-select semantic — aria-current, not aria-pressed (which
+        // would announce each row as a per-row toggle). Codex round-4 P1
+        // 2026-05-30.
+        aria-current={selected ? "true" : undefined}
         data-selected={selected ? "true" : "false"}
         data-session-id={session.id}
         style={{ ...rowStyle, width: "100%", textAlign: "left" }}

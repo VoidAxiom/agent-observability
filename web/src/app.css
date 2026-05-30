@@ -69,14 +69,25 @@ select:hover {
  */
 .voi-app {
   display: grid;
-  grid-template-rows: auto minmax(0, 3fr) minmax(32px, 2fr);
+  /* Outer grid: header row + the `<main>` landmark that wraps the rest.
+   * The interior row split (top 3-pane / waterfall) moved into .voi-main
+   * so the `<main>` landmark contains ALL primary content. Codex round-4
+   * P1 2026-05-30. */
+  grid-template-rows: auto 1fr;
   height: 100vh;
   width: 100%;
   overflow: hidden;
 }
 
-.voi-app[data-waterfall-collapsed="true"] {
-  grid-template-rows: auto minmax(0, 1fr) 32px;
+.voi-main {
+  display: grid;
+  grid-template-rows: minmax(0, 3fr) minmax(32px, 2fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.voi-app[data-waterfall-collapsed="true"] .voi-main {
+  grid-template-rows: minmax(0, 1fr) 32px;
 }
 
 .voi-top-row {
@@ -105,8 +116,8 @@ select:hover {
 }
 
 @media (max-width: 600px) {
-  .voi-app {
-    grid-template-rows: auto 1fr auto;
+  .voi-main {
+    grid-template-rows: 1fr auto;
   }
   .voi-top-row {
     grid-template-columns: 1fr;

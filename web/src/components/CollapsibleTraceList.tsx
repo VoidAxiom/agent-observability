@@ -173,7 +173,9 @@ function TraceItem({
         <button
           type="button"
           onClick={() => onSelectTrace(trace.id)}
-          aria-pressed={selected}
+          // Single-select semantic — aria-current, not aria-pressed.
+          // Codex round-4 P1 2026-05-30.
+          aria-current={selected ? "true" : undefined}
           data-trace-id={trace.id}
           data-selected={selected ? "true" : "false"}
           style={traceLabelButtonStyle}
@@ -227,7 +229,13 @@ function SpanRowItem({ span, selected, onSelect }: SpanRowItemProps) {
       <button
         type="button"
         onClick={() => onSelect(id)}
-        aria-pressed={selected}
+        // aria-current is the correct semantic for "this row is the
+        // active selection in a single-select list" — aria-pressed would
+        // make NVDA/JAWS announce each row as a per-row toggle button,
+        // which doesn't match the interaction (the click flips a global
+        // selectedSpanId, not the row's own state). Codex round-4 P1
+        // 2026-05-30.
+        aria-current={selected ? "true" : undefined}
         data-span-id={id}
         data-depth={span.depth}
         data-selected={selected ? "true" : "false"}

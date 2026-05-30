@@ -57,7 +57,12 @@ const TOAST_DURATION_MS = 1500;
 
 export function DetailsPane({ span, trace, session, nowMs, emptyMessage }: DetailsPaneProps) {
   if (span) {
-    return <SpanDetails span={span} />;
+    // Key the SpanDetails instance on the span identity so its internal
+    // state (copy-toast + in-flight setTimeout) resets when the user
+    // switches spans. Without this, a "copied request_id" toast started
+    // for span A lingers over span B's identity card until the original
+    // 1.5s timer fires. Codex round-4 P1 2026-05-30.
+    return <SpanDetails key={`${span.TraceId}|${span.SpanId}`} span={span} />;
   }
   if (trace) {
     return <TraceDetails trace={trace} />;
@@ -200,9 +205,11 @@ function TraceDetails({ trace }: TraceDetailsProps) {
   const errorCount = trace.spans.reduce((n, s) => (rowHasError(s) ? n + 1 : n), 0);
   const rootName = trace.spans[0]?.SpanName ?? trace.displayLabel;
 
-  const durationDisplay = trace.durationSeconds < 1
-    ? `${(trace.durationSeconds * 1000).toFixed(0)}ms`
-    : `${trace.durationSeconds.toFixed(2)}s`;
+  // Use the canonical hero formatter so the trace hero number matches
+  // the span hero band's ms precision rules (e.g. 47.3ms not 47ms under
+  // 100ms). Hand-rolling the formatter here let the two surfaces drift
+  // — codex round-4 P2 2026-05-30.
+  const durationDisplay = formatHeroDurationMs(trace.durationSeconds * 1000);
   const durationExact = `${trace.durationSeconds.toFixed(6)}s`;
 
   return (

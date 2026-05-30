@@ -293,68 +293,80 @@ function Shell() {
         </div>
       </header>
 
-      <main className="voi-top-row" id="voi-sessions-panel">
-        <div style={paneContainerStyle}>
-          <SessionSidebar
-            sessions={visibleSessions}
-            selectedSessionId={selectedSessionId}
-            onSelect={onSelectSession}
-            nowMs={nowMs}
-            emptyMessage={sidebarEmpty}
-          />
+      {/*
+        The `<main>` landmark must contain ALL primary content. Previously
+        only the top 3-pane row carried role=main and the waterfall sat as
+        a sibling, so an assistive-tech user hitting the "main" landmark
+        shortcut landed in the 3-pane grid only — the waterfall (the most
+        time-consuming surface in the UI) was outside the main landmark.
+        Codex round-4 P1 2026-05-30. The waterfall's own region landmark
+        inside WaterfallShell still names the sub-region for screen-readers.
+      */}
+      <main className="voi-main" id="voi-sessions-panel">
+        <div className="voi-top-row">
+          <div style={paneContainerStyle}>
+            <SessionSidebar
+              sessions={visibleSessions}
+              selectedSessionId={selectedSessionId}
+              onSelect={onSelectSession}
+              nowMs={nowMs}
+              emptyMessage={sidebarEmpty}
+            />
+          </div>
+          <div style={paneContainerStyle}>
+            <CollapsibleTraceList
+              traces={activeSession?.traces ?? []}
+              selectedTraceId={selectedTraceId}
+              selectedSpanId={selectedSpanId}
+              expandedTraceIds={expandedTraceIds}
+              onSelectTrace={onSelectTrace}
+              onSelectSpan={onSelectSpan}
+              onToggleExpand={onToggleExpand}
+              emptyMessage={
+                activeSession
+                  ? "// no traces in this session"
+                  : "// select a session to load its traces"
+              }
+            />
+          </div>
+          <div style={paneContainerStyle}>
+            <DetailsPane
+              span={activeSpan}
+              trace={activeTrace}
+              session={activeSession}
+              nowMs={nowMs}
+              emptyMessage={
+                loading
+                  ? "// awaiting spans from ClickHouse..."
+                  : error
+                    ? `// ClickHouse error: ${error}`
+                    : visibleSessions.length === 0
+                      ? tab === "live"
+                        ? "// no active sessions · switch to History for older"
+                        : "// no spans yet · run cc-launch.sh to emit one"
+                      : "// select a span to inspect its attributes"
+              }
+            />
+          </div>
         </div>
-        <div style={paneContainerStyle}>
-          <CollapsibleTraceList
-            traces={activeSession?.traces ?? []}
-            selectedTraceId={selectedTraceId}
+
+        <div className="voi-waterfall-row">
+          <WaterfallShell
+            spans={activeTrace?.spans ?? []}
+            durationSeconds={activeTrace?.durationSeconds ?? 0}
             selectedSpanId={selectedSpanId}
-            expandedTraceIds={expandedTraceIds}
-            onSelectTrace={onSelectTrace}
-            onSelectSpan={onSelectSpan}
-            onToggleExpand={onToggleExpand}
-            emptyMessage={
-              activeSession
-                ? "// no traces in this session"
-                : "// select a session to load its traces"
-            }
-          />
-        </div>
-        <div style={paneContainerStyle}>
-          <DetailsPane
-            span={activeSpan}
-            trace={activeTrace}
-            session={activeSession}
+            onSelect={onSelectSpan}
             nowMs={nowMs}
             emptyMessage={
-              loading
-                ? "// awaiting spans from ClickHouse..."
-                : error
-                  ? `// ClickHouse error: ${error}`
-                  : visibleSessions.length === 0
-                    ? tab === "live"
-                      ? "// no active sessions · switch to History for older"
-                      : "// no spans yet · run cc-launch.sh to emit one"
-                    : "// select a span to inspect its attributes"
+              activeTrace
+                ? "// no spans in this trace"
+                : "// select a trace to load its waterfall"
             }
+            collapsed={waterfallCollapsed}
+            onToggleCollapsed={() => setWaterfallCollapsed((c) => !c)}
           />
         </div>
       </main>
-
-      <div className="voi-waterfall-row">
-        <WaterfallShell
-          spans={activeTrace?.spans ?? []}
-          selectedSpanId={selectedSpanId}
-          onSelect={onSelectSpan}
-          nowMs={nowMs}
-          emptyMessage={
-            activeTrace
-              ? "// no spans in this trace"
-              : "// select a trace to load its waterfall"
-          }
-          collapsed={waterfallCollapsed}
-          onToggleCollapsed={() => setWaterfallCollapsed((c) => !c)}
-        />
-      </div>
     </div>
   );
 }

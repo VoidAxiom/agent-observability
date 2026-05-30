@@ -30,6 +30,18 @@
   opacity: 0.4;
 }
 
+/* Synthetic "no-timestamp" bars: visually distinct so the operator can
+ * tell at a glance that the bar's geometry is a fallback (the source
+ * span had an unparseable Timestamp). Reduced opacity + dashed border
+ * effect via filter. Codex round-4 P1 2026-05-30. */
+g[data-no-timestamp="true"] > .voi-waterfall-bar {
+  opacity: 0.5;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  fill-opacity: 0.4;
+}
+
 .voi-waterfall-bar[data-glow="soft"] {
   filter: drop-shadow(0 0 2px currentColor);
 }

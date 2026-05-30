@@ -8,7 +8,6 @@
  */
 
 import { type CSSProperties } from "react";
-import { parseTimestamp } from "../lib/grouping";
 import { Waterfall, type WaterfallProps } from "./Waterfall";
 
 export interface WaterfallShellProps extends WaterfallProps {
@@ -22,39 +21,28 @@ export interface WaterfallShellProps extends WaterfallProps {
    */
   collapsed: boolean;
   onToggleCollapsed: () => void;
-}
-
-/*
- * Compute the trace duration the chip prints. MUST use the same
- * parseTimestamp helper Waterfall.buildLayout uses so the chip and the
- * bars agree on what "the trace" looks like — raw Date.parse rejects
- * the ClickHouse forms parseTimestamp accepts (space separator,
- * 9-digit fractional seconds), which would silently print "0s" in the
- * chip above a real 30-second waterfall.
- */
-function formatChipDuration(spans: WaterfallProps["spans"]): string {
-  if (spans.length === 0) return "0s";
-  let earliest = Number.POSITIVE_INFINITY;
-  let latest = Number.NEGATIVE_INFINITY;
-  for (const s of spans) {
-    const t = parseTimestamp(s.Timestamp);
-    if (t === null) continue;
-    const end = t + s.Duration / 1_000_000;
-    if (t < earliest) earliest = t;
-    if (end > latest) latest = end;
-  }
-  if (!Number.isFinite(earliest) || !Number.isFinite(latest)) return "0s";
-  const seconds = Math.max(0, (latest - earliest) / 1000);
-  return `${seconds.toFixed(3)}s`;
+  /**
+   * Canonical trace duration (seconds). Passed in from the parent's
+   * `activeTrace.durationSeconds` so the chip stays in lockstep with
+   * the trace list and DetailsPane. Previously this component computed
+   * its own duration from the spans array via a parseTimestamp scan; if
+   * every span's Timestamp failed to parse, the chip silently printed
+   * "0s" above a non-empty waterfall body — and even when timestamps
+   * parsed, the chip's duration could disagree with CollapsibleTraceList
+   * by a few ms because both sides walked the spans independently.
+   * Codex round-4 P2 2026-05-30.
+   */
+  durationSeconds: number;
 }
 
 export function WaterfallShell({
   collapsed,
   onToggleCollapsed,
+  durationSeconds,
   ...waterfallProps
 }: WaterfallShellProps) {
   const spans = waterfallProps.spans;
-  const chipText = `// waterfall · ${spans.length} spans · ${formatChipDuration(spans)}`;
+  const chipText = `// waterfall · ${spans.length} spans · ${durationSeconds.toFixed(3)}s`;
 
   return (
     // Plain <div> — the inner <Waterfall> is the landmark; nesting three
@@ -70,7 +58,11 @@ export function WaterfallShell({
         type="button"
         onClick={onToggleCollapsed}
         aria-expanded={!collapsed}
-        aria-controls="voi-waterfall-body"
+        // aria-controls must reference an element that exists in the DOM.
+        // The body div is unmounted when collapsed=true, so advertise the
+        // relation only when the controlled region is actually present.
+        // Codex round-4 P1 2026-05-30 (dangling aria-controls reference).
+        aria-controls={collapsed ? undefined : "voi-waterfall-body"}
         data-tooltip={collapsed ? "click to expand" : "click to collapse"}
         data-testid="voi-waterfall-chip"
         style={chipButtonStyle}
