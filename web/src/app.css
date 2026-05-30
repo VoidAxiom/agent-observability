@@ -50,3 +50,34 @@ button:hover,
 select:hover {
   border-color: var(--border-active);
 }
+
+/*
+ * Liveness keyframes consumed by SessionSidebar status dot.
+ * Active = amber-tinted pulsing dot; error = single red strobe on first
+ * render then static. Both animate opacity/transform/filter only —
+ * GPU-safe, no layout reflow.
+ *
+ * Brutalist disables animation by setting --motion-snap: 0s in themes.css,
+ * but these keyframes are global. Honor the prefers-reduced-motion media
+ * query below so the cyberpunk discipline ("Motion only on liveness")
+ * still respects user OS preference.
+ */
+@keyframes voi-active-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
+@keyframes voi-error-strobe {
+  0% { opacity: 1; filter: brightness(1.6); }
+  100% { opacity: 1; filter: brightness(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

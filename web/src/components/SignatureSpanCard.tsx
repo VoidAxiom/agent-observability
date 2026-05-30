@@ -1,10 +1,11 @@
 import type { CSSProperties } from "react";
+import {
+  familyToAccentVar,
+  familyToGlowVar,
+  type SpanFamily,
+} from "../lib/spanFamily";
 
-export type SpanFamily =
-  | "claude_code.interaction"
-  | "claude_code.llm_request"
-  | "claude_code.tool"
-  | "codex_exec";
+export type { SpanFamily } from "../lib/spanFamily";
 
 export interface SignatureSpanCardProps {
   name: string;
@@ -14,23 +15,6 @@ export interface SignatureSpanCardProps {
   outputTokens?: number;
 }
 
-// Family → accent token slot. Token-only; never hex literals.
-// docs/web-ui-cyberpunk-discipline.md "Reserve magenta for action and selection"
-// — interaction/llm/codex map to non-magenta accents; tool keeps magenta.
-const FAMILY_ACCENT_VAR: Record<SpanFamily, string> = {
-  "claude_code.interaction": "var(--accent-3)",
-  "claude_code.llm_request": "var(--accent-2)",
-  "claude_code.tool": "var(--accent-1)",
-  codex_exec: "var(--accent-2)",
-};
-
-const FAMILY_GLOW_VAR: Record<SpanFamily, string> = {
-  "claude_code.interaction": "var(--glow-accent-3)",
-  "claude_code.llm_request": "var(--glow-accent-2)",
-  "claude_code.tool": "var(--glow-accent-1)",
-  codex_exec: "var(--glow-accent-2)",
-};
-
 export function SignatureSpanCard({
   name,
   family,
@@ -38,8 +22,8 @@ export function SignatureSpanCard({
   inputTokens,
   outputTokens,
 }: SignatureSpanCardProps) {
-  const accent = FAMILY_ACCENT_VAR[family];
-  const glow = FAMILY_GLOW_VAR[family];
+  const accent = familyToAccentVar(family);
+  const glow = familyToGlowVar(family);
 
   const cardStyle: CSSProperties = {
     position: "relative",
