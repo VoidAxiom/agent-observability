@@ -775,7 +775,8 @@ user-visible behavior end-to-end on the dev box. For this project that
 typically means: run an emit via the Python SDK, watch the OTLP arrive at
 the Collector, query ClickHouse via `clickhouse-client`, and (where
 relevant) observe the span/run rendered in the React + Tauri UI under
-`web/` (via `pnpm dev` + Playwright navigation against `http://localhost:5173`).
+`web/` (via `pnpm dev` + Playwright navigation against `http://localhost:5174`
+— `web/vite.config.ts` pins `port: 5174` with `strictPort: true`).
 
 **Build approach: walking skeleton first** (load-bearing — overrides any
 default "scaffold-then-vertical" instinct).
