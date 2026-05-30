@@ -82,3 +82,27 @@ describe("groupAttributes — hidden-keys filter", () => {
     expect(otherGroup).toBeUndefined();
   });
 });
+
+describe("groupAttributes — usage total_tokens bucketing parity", () => {
+  it("namespaced total_tokens lands in REQUEST (same bucket as the unqualified form)", () => {
+    // Unqualified `total_tokens` is in REQUEST_EXACT. The OTel GenAI
+    // semconv form `gen_ai.usage.total_tokens` (and the older
+    // `llm.usage.total_tokens` alias) must follow — otherwise operators
+    // see total_tokens drift between REQUEST and OTHER depending on the
+    // emitter. Codex round-4 P2 regression pin.
+    const attrs: Record<string, string> = {
+      total_tokens: "1500",
+      "gen_ai.usage.total_tokens": "1500",
+      "llm.usage.total_tokens": "1500",
+    };
+    const grouped = groupAttributes(attrs);
+    const requestGroup = grouped.find((g) => g.group.name === "REQUEST");
+    const otherGroup = grouped.find((g) => g.group.name === "OTHER");
+    const requestKeys = (requestGroup?.entries ?? []).map(([k]) => k);
+    expect(requestKeys).toContain("total_tokens");
+    expect(requestKeys).toContain("gen_ai.usage.total_tokens");
+    expect(requestKeys).toContain("llm.usage.total_tokens");
+    // OTHER bucket must NOT pick any of the three forms up.
+    expect(otherGroup).toBeUndefined();
+  });
+});

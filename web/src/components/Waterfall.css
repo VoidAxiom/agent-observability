@@ -46,6 +46,17 @@
   animation: voi-running-pulse 1.5s ease-in-out infinite;
 }
 
+/* Dimmed wins over running-pulse. The pulse keyframes animate opacity
+ * 0.7↔1.0, which overrides the static opacity:0.4 set by data-dimmed.
+ * Without this override, a running sibling that the user hovered away
+ * from keeps pulsing brightly while the hovered ancestor chain stays
+ * highlighted — undermining the hover-to-focus affordance. Codex
+ * round-4 P1 2026-05-30. */
+.voi-waterfall-bar[data-running="true"][data-dimmed="true"] {
+  animation: none;
+  opacity: 0.4;
+}
+
 @keyframes voi-running-pulse {
   0%, 100% { opacity: 0.7; }
   50% { opacity: 1; }
@@ -181,6 +192,25 @@
   0% { opacity: 0.85; filter: drop-shadow(0 0 6px currentColor) hue-rotate(0deg); }
   50% { opacity: 1; filter: drop-shadow(0 0 6px currentColor) hue-rotate(30deg); }
   100% { opacity: 0.85; filter: drop-shadow(0 0 6px currentColor) hue-rotate(0deg); }
+}
+
+/* Dimmed wins over EVERY per-style running animation. Each running
+ * variant (default pulse / terminal stepped / liquid wave / holo hue)
+ * animates opacity through the 0.7-1.0 range, which would otherwise
+ * override the static opacity:0.4 from data-dimmed. Match the per-style
+ * specificity here so the dim affordance always wins. Liquid also gets
+ * skewY zeroed; holo also gets its filter dropped. */
+[data-style="terminal"] .voi-waterfall-bar[data-running="true"][data-dimmed="true"],
+[data-style="liquid"] .voi-waterfall-bar[data-running="true"][data-dimmed="true"],
+[data-style="holo"] .voi-waterfall-bar[data-running="true"][data-dimmed="true"] {
+  animation: none;
+  opacity: 0.4;
+}
+[data-style="liquid"] .voi-waterfall-bar[data-running="true"][data-dimmed="true"] {
+  transform: none;
+}
+[data-style="holo"] .voi-waterfall-bar[data-running="true"][data-dimmed="true"] {
+  filter: none;
 }
 
 /* Honor reduced-motion globally — also overrides the per-style anims. */

@@ -134,6 +134,14 @@ export const OTHER_GROUP: AttributeGroup = {
 function isUsageRequestKey(key: string): boolean {
   // gen_ai.usage.input_tokens / .prompt_tokens / .cache_read_tokens etc.
   // Anything that's clearly REQUEST-side input consumption.
+  //
+  // "total" lives here too: unqualified `total_tokens` lands in REQUEST
+  // via REQUEST_EXACT, so the namespaced `gen_ai.usage.total_tokens`
+  // (OTel GenAI semconv) and `llm.usage.total_tokens` must follow the
+  // same bucket — otherwise an OTel-compliant emitter shows total_tokens
+  // in OTHER while a hand-rolled emitter shows it in REQUEST, breaking
+  // the 4-card discipline the file docstring promises. Codex round-4 P2
+  // 2026-05-30.
   if (!key.startsWith("gen_ai.usage.") && !key.startsWith("llm.usage.")) {
     return false;
   }
@@ -141,7 +149,8 @@ function isUsageRequestKey(key: string): boolean {
   return (
     tail.includes("input") ||
     tail.includes("prompt") ||
-    tail.includes("cache")
+    tail.includes("cache") ||
+    tail.includes("total")
   );
 }
 

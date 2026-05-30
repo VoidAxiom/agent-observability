@@ -600,10 +600,27 @@ function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
     hydrate();
   }, [hydrate]);
 
-  // Track which edges have run the sweep in THIS mount to avoid re-firing
-  // when the spans array updates (e.g. polling adds new spans). Persistence
-  // across mounts is handled by the zustand store.
-  const sweptThisMountRef = useRef<Set<string>>(new Set());
+  // Track which edges are mid-sweep OR have completed in THIS mount to
+  // avoid firing duplicate tweens when the spans array updates (e.g.
+  // polling adds new spans, mutating layout.crossEdges into a new array
+  // reference). Persistence across mounts is handled by the zustand
+  // store. The Map records the tween so we can let it run (don't .kill)
+  // when the effect re-runs because of an unrelated edges-array
+  // reference change.
+  //
+  // Why a tween-tracking Map and not the previous "added before
+  // gsap.to" guard: the prior version inserted edge.key into a Set
+  // BEFORE creating the tween and then killed in-flight tweens in the
+  // effect cleanup. A poll commit landing during the 0.6s sweep window
+  // (guaranteed on mount: doFetch resolves a few hundred ms in) flipped
+  // the edges identity, cleanup killed the tween, onComplete never
+  // fired, but the key was already in the Set — so the next effect run
+  // skipped re-launching, leaving the path stuck at the killed-
+  // mid-flight stroke-dashoffset with data-state="sweep" until the
+  // user navigated away. Codex round-4 P0 2026-05-30.
+  const sweptThisMountRef = useRef<Map<string, gsap.core.Tween | "done">>(
+    new Map(),
+  );
 
   useEffect(() => {
     // Don't drive sweeps until hydration finishes — otherwise we may fire
@@ -615,27 +632,28 @@ function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    const activeTweens: gsap.core.Tween[] = [];
     // Read the persisted set ONCE at effect start; subsequent
     // markCelebrated calls inside this effect run won't re-trigger the
     // effect because celebratedSet isn't in the deps array.
     const persistedAtStart = useCrossProcessStore.getState().celebrated;
 
     for (const edge of edges) {
+      // Already mid-sweep or completed in this mount — leave it alone.
       if (sweptThisMountRef.current.has(edge.key)) continue;
       if (persistedAtStart.has(edge.key)) {
-        sweptThisMountRef.current.add(edge.key);
+        sweptThisMountRef.current.set(edge.key, "done");
         continue;
       }
-      sweptThisMountRef.current.add(edge.key);
 
       const path = pathRefs.current.get(edge.key);
       if (!path) {
+        sweptThisMountRef.current.set(edge.key, "done");
         markCelebrated(edge.key);
         continue;
       }
 
       if (prefersReducedMotion) {
+        sweptThisMountRef.current.set(edge.key, "done");
         path.setAttribute("data-state", "settled");
         markCelebrated(edge.key);
         continue;
@@ -657,6 +675,7 @@ function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
         duration: 0.6,
         ease: "power2.out",
         onComplete: () => {
+          sweptThisMountRef.current.set(edge.key, "done");
           // Guard against unmount: the path may have been detached if the
           // user navigated away mid-sweep. isConnected returns false for a
           // detached node; in that case do NOT mark celebrated — the user
@@ -668,23 +687,32 @@ function CrossProcessEdges({ edges }: CrossProcessEdgesProps) {
           markCelebrated(edge.key);
         },
       });
-      activeTweens.push(tween);
+      sweptThisMountRef.current.set(edge.key, tween);
     }
 
-    return () => {
-      // On unmount or edges-change, kill in-flight tweens so onComplete
-      // can't fire against a detached path (still safe via isConnected,
-      // but explicit kill avoids spurious work and lets a remount replay
-      // a tween that never completed visibly).
-      for (const tween of activeTweens) {
-        tween.kill();
-      }
-    };
+    // No per-run cleanup. The previous version killed in-flight tweens
+    // on every dep-change which broke the dopamine animation under
+    // polling. Tweens are short (0.6s) and self-clean via onComplete;
+    // detached paths are guarded inside onComplete via isConnected.
+    return undefined;
     // celebratedSet deliberately omitted from deps — see the comment on
     // the selector above. The effect reads the persisted set via
     // getState() so onComplete-triggered store updates don't re-run
     // (and prematurely .kill()) sibling tweens.
   }, [edges, hydrated, markCelebrated]);
+
+  // Unmount-only cleanup: kill any tweens still in flight so onComplete
+  // doesn't fire against a stale closure after this component leaves
+  // the tree. Keeping this in its own effect with an empty deps array
+  // ensures it runs ONLY on unmount, not on every edges-array re-ref.
+  useEffect(() => {
+    const tweens = sweptThisMountRef.current;
+    return () => {
+      for (const entry of tweens.values()) {
+        if (entry !== "done") entry.kill();
+      }
+    };
+  }, []);
 
   return (
     <g aria-hidden="true">
