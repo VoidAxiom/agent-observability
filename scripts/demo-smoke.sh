@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Purpose: run the M0 walking-skeleton smoke path end to end.
 # This script does not tear down on failure; containers stay up for log and ClickHouse inspection.
-# Next step for visual confirmation: cd web && pnpm dev (Vite dev server on :5173).
+# Next step for visual confirmation: cd web && pnpm dev (Vite dev server on :5174).
 
 set -euo pipefail
 
@@ -84,7 +84,7 @@ cat <<'EOF'
       cd web && pnpm install && pnpm dev
   (pnpm install is first-time only; if web/node_modules already exists you
   can skip straight to pnpm dev.)
-  Then navigate to http://localhost:5173 — 'agent_obs_sdk.smoke' will appear
+  Then navigate to http://localhost:5174 — 'agent_obs_sdk.smoke' will appear
   in the Sessions sidebar within 10 seconds (Live tab default; switch to
   History if the span has aged past the 5-min active window).
 EOF
