@@ -62,6 +62,37 @@ select:hover {
  * query below so the cyberpunk discipline ("Motion only on liveness")
  * still respects user OS preference.
  */
+/*
+ * 3-pane shell grid. Default desktop layout matches the inline gridStyle
+ * baseline (sidebar 280-320 + traces 320-360 + 1fr inspector half). Below
+ * 900px the inspector half collapses (Tauri window narrower than its
+ * normal docked width); below 600px the shell stacks vertically so panes
+ * stay legible on a constrained browser viewport. Defined here so the
+ * media query can co-locate with the layout it modifies — CSSProperties
+ * can't carry @media.
+ */
+.voi-pane-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 320px) minmax(320px, 360px) 1fr;
+  gap: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+@media (max-width: 900px) {
+  .voi-pane-grid {
+    grid-template-columns: minmax(220px, 260px) minmax(260px, 300px) 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .voi-pane-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
+    overflow-y: auto;
+  }
+}
+
 @keyframes voi-active-pulse {
   0%, 100% { opacity: 0.55; transform: scale(0.9); }
   50% { opacity: 1; transform: scale(1.08); }

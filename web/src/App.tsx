@@ -154,7 +154,7 @@ function Shell() {
         <ThemePicker />
       </header>
 
-      <main style={gridStyle}>
+      <main className="voi-pane-grid">
         <div style={paneContainerStyle}>
           <SessionSidebar
             sessions={sessions}
@@ -250,13 +250,9 @@ const subtitleStyle: CSSProperties = {
   color: "var(--text-muted)",
 };
 
-const gridStyle: CSSProperties = {
-  flex: 1,
-  display: "grid",
-  gridTemplateColumns: "minmax(280px, 320px) minmax(320px, 360px) 1fr",
-  gap: 0,
-  minHeight: 0,
-};
+// Grid layout lives in app.css under .voi-pane-grid so the responsive
+// media queries (≤900px tighter tracks; ≤600px stacked) can co-locate
+// with the layout — CSSProperties cannot carry @media.
 
 const paneContainerStyle: CSSProperties = {
   display: "flex",
