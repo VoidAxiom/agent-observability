@@ -54,23 +54,35 @@ select:hover {
 
 /*
  * VOI-346 shell — top 3-pane row + bottom waterfall row + sticky header.
- * The waterfall row collapses to 32px (the chip height) when WaterfallShell
- * sets data-collapsed=true on its child <section>; we capture that via the
- * parent .voi-waterfall-row.is-collapsed modifier that App.tsx toggles.
+ *
+ * Grid rows: header (auto) + top-pane row (flexible) + waterfall row
+ * (fixed-but-collapsible). The viewport is 100vh exactly; using fixed
+ * 60vh / 40vh on the two body rows would have totaled 100vh PLUS the
+ * header height and clipped the waterfall's last rows off-screen with
+ * overflow:hidden suppressing the scrollbar.
+ *
+ * Instead: the top row takes `minmax(0, 3fr)` and the waterfall row
+ * takes `minmax(0, 2fr)`, giving the spec's 3:2 (60:40) split of the
+ * REMAINING space after the header — no clipping under any header
+ * height. When the waterfall collapses, its row drops to 32px and the
+ * top row claims the freed space via its 1fr-relative weight.
  */
 .voi-app {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 3fr) minmax(32px, 2fr);
   height: 100vh;
   width: 100%;
   overflow: hidden;
+}
+
+.voi-app[data-waterfall-collapsed="true"] {
+  grid-template-rows: auto minmax(0, 1fr) 32px;
 }
 
 .voi-top-row {
   display: grid;
   grid-template-columns: minmax(280px, 320px) minmax(320px, 400px) 1fr;
   min-height: 0;
-  height: 60vh;
   border-bottom: 1px solid var(--border-base);
 }
 
@@ -79,17 +91,11 @@ select:hover {
 }
 
 .voi-waterfall-row {
-  height: 40vh;
   min-height: 32px;
   border-top: 1px solid var(--border-base);
   display: flex;
   flex-direction: column;
-  transition: height 200ms ease-out;
   overflow: hidden;
-}
-
-.voi-waterfall-row.is-collapsed {
-  height: 32px;
 }
 
 @media (max-width: 900px) {

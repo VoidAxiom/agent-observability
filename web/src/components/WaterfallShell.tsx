@@ -7,15 +7,21 @@
  * surface needs to read it.
  */
 
-import { useState, type CSSProperties } from "react";
+import { type CSSProperties } from "react";
 import { parseTimestamp } from "../lib/grouping";
 import { Waterfall, type WaterfallProps } from "./Waterfall";
 
 export interface WaterfallShellProps extends WaterfallProps {
-  /** Optional override for tests that want to pin the collapsed state. */
-  defaultCollapsed?: boolean;
-  /** Notified when the user toggles collapse so App.tsx can update the row class. */
-  onCollapsedChange?: (collapsed: boolean) => void;
+  /**
+   * Controlled collapsed state. App.tsx owns this so the parent row CSS
+   * class and the inner body render stay in lockstep — a previous version
+   * kept a local useState here and only notified the parent on toggle,
+   * which would desync on any future remount (HMR, suspense boundary,
+   * key-on-trace-id refactor) and leave the body rendered inside a
+   * 32px-collapsed row.
+   */
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }
 
 /*
@@ -43,31 +49,26 @@ function formatChipDuration(spans: WaterfallProps["spans"]): string {
 }
 
 export function WaterfallShell({
-  defaultCollapsed = false,
-  onCollapsedChange,
+  collapsed,
+  onToggleCollapsed,
   ...waterfallProps
 }: WaterfallShellProps) {
-  const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
-
-  const toggle = () => {
-    const next = !collapsed;
-    setCollapsed(next);
-    onCollapsedChange?.(next);
-  };
-
   const spans = waterfallProps.spans;
   const chipText = `// waterfall · ${spans.length} spans · ${formatChipDuration(spans)}`;
 
   return (
-    <section
-      aria-label="Waterfall shell"
+    // Plain <div> — the inner <Waterfall> is the landmark; nesting three
+    // aria-labeled landmarks (App row + Shell + Waterfall) for one
+    // logical region trips landmark-uniqueness a11y audits and makes
+    // screen-readers announce the area three times.
+    <div
       style={shellStyle}
       data-collapsed={collapsed ? "true" : "false"}
       data-testid="voi-waterfall-shell"
     >
       <button
         type="button"
-        onClick={toggle}
+        onClick={onToggleCollapsed}
         aria-expanded={!collapsed}
         aria-controls="voi-waterfall-body"
         data-tooltip={collapsed ? "click to expand" : "click to collapse"}
@@ -84,7 +85,7 @@ export function WaterfallShell({
           <Waterfall {...waterfallProps} />
         </div>
       ) : null}
-    </section>
+    </div>
   );
 }
 

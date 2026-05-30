@@ -36,7 +36,7 @@ import { parseTimestamp } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
 import { buildEdgeKey, useCrossProcessStore } from "../lib/crossProcessStore";
 import { bestContrastTextOn } from "../lib/bestContrast";
-import { isSubagent } from "../lib/isSubagent";
+import { isSubagent, subagentType } from "../lib/isSubagent";
 import "./Waterfall.css";
 
 export interface WaterfallProps {
@@ -141,8 +141,12 @@ export function Waterfall({
     );
   }
 
+  // Reserve height for ONLY the bars that actually got laid out — a span
+  // whose Timestamp didn't parse is silently dropped by buildLayout, and
+  // reserving a row for it leaves a phantom empty band at the bottom of
+  // the SVG with no matching bar.
   const totalHeight =
-    TIME_AXIS_HEIGHT + spans.length * ROW_HEIGHT + BAR_Y_OFFSET;
+    TIME_AXIS_HEIGHT + layout.bars.length * ROW_HEIGHT + BAR_Y_OFFSET;
 
   return (
     <section
@@ -256,7 +260,7 @@ function buildLayout(
   }
 
   const bars: BarLayout[] = [];
-  spans.forEach((span, index) => {
+  spans.forEach((span) => {
     const id = spanRowId(span);
     const startMs = starts.get(id);
     if (startMs === undefined) return;
@@ -286,12 +290,16 @@ function buildLayout(
     const endMs = startMs + span.Duration / 1_000_000;
     const isRunning =
       isStatusUnset(span.StatusCode) && endMs > nowMs - 1000;
+    // Lane index = position in `bars`, NOT the source spans-array index.
+    // A dropped span (unparseable Timestamp) would otherwise leave a
+    // phantom empty lane where its source index would have sat.
+    const laneIndex = bars.length;
     bars.push({
       span,
       spanId: id,
-      rowIndex: index,
+      rowIndex: laneIndex,
       x: LEFT_GUTTER + clampedX,
-      y: TIME_AXIS_HEIGHT + index * ROW_HEIGHT + BAR_Y_OFFSET,
+      y: TIME_AXIS_HEIGHT + laneIndex * ROW_HEIGHT + BAR_Y_OFFSET,
       width: visibleWidth,
       family,
       accent,
@@ -369,13 +377,17 @@ function WaterfallBar({
   const label = bar.span.SpanName;
   const showLabel = bar.width > 40;
   const sub = isSubagent(bar.span);
+  // Show the actual subagent_type (e.g. "[BASH]", "[UI-IMPLEMENTER]") so
+  // this label agrees with the CollapsibleTraceList badge instead of
+  // printing a generic "[SUBAGENT]" the operator can't correlate.
+  const subLabel = sub ? `[${subagentType(bar.span).toUpperCase()}]` : "";
   // The subagent suffix needs ~80px of bar width to render without crowding
   // the main label; below that, skip it entirely (per spec).
   const showSubagent = sub && bar.width >= 80;
-  const truncatedLabel = truncateLabel(
-    label,
-    showSubagent ? bar.width - 60 : bar.width,
-  );
+  // Reserve space proportional to the actual label length (~6.5px per
+  // mono char @ 10px) so a long subagent_type doesn't overrun the bar.
+  const subReserve = showSubagent ? Math.min(bar.width / 2, subLabel.length * 6.5 + 8) : 0;
+  const truncatedLabel = truncateLabel(label, bar.width - subReserve);
   // Pick a label fill that reads against the bar's family color. The 3
   // bright-neon accent families resolve to dark `--bg`; everything else
   // (only the muted accent or unknown vars) falls back to `--text`. This
@@ -451,7 +463,7 @@ function WaterfallBar({
           style={{ fill: labelFill }}
           textAnchor="end"
         >
-          [SUBAGENT]
+          {subLabel}
         </text>
       ) : null}
     </g>

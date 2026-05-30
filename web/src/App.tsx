@@ -212,7 +212,7 @@ function Shell() {
         : "// no spans yet · run cc-launch.sh to emit one";
 
   return (
-    <div className="voi-app">
+    <div className="voi-app" data-waterfall-collapsed={waterfallCollapsed ? "true" : "false"}>
       <header style={headerStyle}>
         <div style={titleColumnStyle}>
           <h1 style={titleStyle}>agent-observability</h1>
@@ -261,14 +261,22 @@ function Shell() {
             trace={activeTrace}
             session={activeSession}
             nowMs={nowMs}
+            emptyMessage={
+              loading
+                ? "// awaiting spans from ClickHouse..."
+                : error
+                  ? `// ClickHouse error: ${error}`
+                  : visibleSessions.length === 0
+                    ? tab === "live"
+                      ? "// no active sessions · switch to History for older"
+                      : "// no spans yet · run cc-launch.sh to emit one"
+                    : "// select a span to inspect its attributes"
+            }
           />
         </div>
       </main>
 
-      <section
-        className={`voi-waterfall-row${waterfallCollapsed ? " is-collapsed" : ""}`}
-        aria-label="Waterfall row"
-      >
+      <div className="voi-waterfall-row">
         <WaterfallShell
           spans={activeTrace?.spans ?? []}
           selectedSpanId={selectedSpanId}
@@ -279,9 +287,10 @@ function Shell() {
               ? "// no spans in this trace"
               : "// select a trace to load its waterfall"
           }
-          onCollapsedChange={setWaterfallCollapsed}
+          collapsed={waterfallCollapsed}
+          onToggleCollapsed={() => setWaterfallCollapsed((c) => !c)}
         />
-      </section>
+      </div>
     </div>
   );
 }

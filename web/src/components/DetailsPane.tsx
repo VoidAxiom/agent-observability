@@ -34,6 +34,13 @@ export interface DetailsPaneProps {
   trace: TraceGroup | null;
   session: SessionGroup | null;
   nowMs: number;
+  /**
+   * Context-aware empty-state message. Cold-start ("// awaiting spans
+   * from ClickHouse...") differs from steady-state ("// select a span
+   * to inspect..."); App supplies whichever applies so the empty pane
+   * never lies about whether there's anything to select.
+   */
+  emptyMessage?: string;
 }
 
 interface HeroNumeral {
@@ -48,7 +55,7 @@ interface HeroNumeral {
 
 const TOAST_DURATION_MS = 1500;
 
-export function DetailsPane({ span, trace, session, nowMs }: DetailsPaneProps) {
+export function DetailsPane({ span, trace, session, nowMs, emptyMessage }: DetailsPaneProps) {
   if (span) {
     return <SpanDetails span={span} />;
   }
@@ -60,7 +67,9 @@ export function DetailsPane({ span, trace, session, nowMs }: DetailsPaneProps) {
   }
   return (
     <section aria-label="Details" style={emptyPaneStyle}>
-      <p style={emptyTextStyle}>// select a span to inspect its attributes</p>
+      <p style={emptyTextStyle}>
+        {emptyMessage ?? "// select a span to inspect its attributes"}
+      </p>
     </section>
   );
 }
