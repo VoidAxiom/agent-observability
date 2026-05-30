@@ -189,6 +189,81 @@ describe("usePolledSpans", () => {
     }
   });
 
+  it("in-flight fetch from a prior effect epoch does NOT leak into the new epoch", async () => {
+    // Regression: /code-review round-3 finding. When the effect re-runs
+    // (e.g. intervalMs changes), the prior effect's still-in-flight fetch
+    // must NOT commit into the new epoch — the cancelled-closure scopes
+    // the guard to the effect run it was started in.
+    vi.useFakeTimers();
+    try {
+      const oldEpochResolvers: Array<(rows: SpanRow[]) => void> = [];
+      const newEpochResolvers: Array<(rows: SpanRow[]) => void> = [];
+      let intervalMs = 100;
+      let isOldEpoch = true;
+
+      const fetchImpl = vi.fn(
+        () =>
+          new Promise<SpanRow[]>((resolve) => {
+            if (isOldEpoch) {
+              oldEpochResolvers.push(resolve);
+            } else {
+              newEpochResolvers.push(resolve);
+            }
+          }),
+      );
+
+      let last: ReturnType<typeof usePolledSpans> | null = null;
+      function Wrapper() {
+        const state = usePolledSpans({ intervalMs, fetchImpl });
+        useEffect(() => {
+          last = state;
+        }, [state]);
+        return null;
+      }
+
+      const { rerender } = render(<Wrapper />);
+
+      // Old-epoch fetch in flight (not yet resolved).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(oldEpochResolvers.length).toBe(1);
+
+      // Switch epochs: bump intervalMs to force the effect to re-run.
+      isOldEpoch = false;
+      intervalMs = 200;
+      rerender(<Wrapper />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(newEpochResolvers.length).toBe(1);
+
+      // Resolve the OLD-epoch fetch with a stale-epoch payload. It must
+      // NOT commit (cancelled-closure dropped it).
+      await act(async () => {
+        oldEpochResolvers[0]!([row("stale-epoch", "stale-epoch-session")]);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const afterStale = last as unknown as ReturnType<typeof usePolledSpans>;
+      // Still loading: no commit landed from the stale epoch.
+      expect(afterStale.sessions.length).toBe(0);
+      expect(afterStale.loading).toBe(true);
+
+      // Resolve the NEW-epoch fetch — it commits cleanly.
+      await act(async () => {
+        newEpochResolvers[0]!([row("fresh-epoch", "fresh-epoch-session")]);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const afterFresh = last as unknown as ReturnType<typeof usePolledSpans>;
+      expect(afterFresh.sessions.length).toBe(1);
+      expect(afterFresh.sessions[0]!.sessionKey).toBe("fresh-epoch-session");
+      expect(afterFresh.loading).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      cleanup();
+    }
+  });
+
   it("error during fetch keeps last-good sessions and surfaces message", async () => {
     vi.useFakeTimers();
     try {

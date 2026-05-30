@@ -80,8 +80,16 @@ export function usePolledSpans(
 
   useEffect(() => {
     mountedRef.current = true;
-    lastCommittedGenRef.current = 0;
-    generationRef.current = 0;
+    // Local-to-effect cancellation flag: cleanup flips it so any in-flight
+    // fetch from this effect cannot commit after a NEW effect (e.g. caused
+    // by intervalMs change) starts. The hook-scoped mountedRef alone is
+    // insufficient because React re-runs the effect body immediately after
+    // cleanup, flipping mountedRef back to true and letting a prior-effect
+    // fetch land into the new effect's lifecycle (which would also reset
+    // the generation counters — the old fetch would then look "newer" than
+    // anything committed in the new epoch). The cancelled-closure scopes
+    // the guard to THIS effect run.
+    let cancelled = false;
 
     const resolveConfig = (): ClickHouseConfig => {
       if (configRef.current) return configRef.current;
@@ -99,6 +107,8 @@ export function usePolledSpans(
       // > intervalMs. The original "stale-slow-fetch loses to newer-fast-
       // fetch" ordering is preserved: the fast successor commits first,
       // bumps lastCommittedGen, and the older fetch is then dropped.
+      // The cancelled-closure additionally drops any fetch belonging to a
+      // prior effect epoch (cleanup → re-run) wholesale.
       generationRef.current += 1;
       const gen = generationRef.current;
 
@@ -108,7 +118,7 @@ export function usePolledSpans(
         const impl = fetchRef.current;
         rows = impl ? await impl(cfg) : await fetchOnce(cfg);
       } catch (err) {
-        if (!mountedRef.current || gen <= lastCommittedGenRef.current) return;
+        if (cancelled || !mountedRef.current || gen <= lastCommittedGenRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
         lastCommittedGenRef.current = gen;
         setState((prev) => ({
@@ -121,7 +131,7 @@ export function usePolledSpans(
         }));
         return;
       }
-      if (!mountedRef.current || gen <= lastCommittedGenRef.current) return;
+      if (cancelled || !mountedRef.current || gen <= lastCommittedGenRef.current) return;
       lastCommittedGenRef.current = gen;
       const sessions = groupSpans(rows);
       setState({
@@ -138,6 +148,7 @@ export function usePolledSpans(
     }, intervalMs);
 
     return () => {
+      cancelled = true;
       mountedRef.current = false;
       window.clearInterval(handle);
     };
