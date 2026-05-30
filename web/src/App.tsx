@@ -3,7 +3,7 @@ import { ThemeProvider } from "./theme/ThemeProvider";
 import { ThemePicker } from "./theme/ThemePicker";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { TraceList } from "./components/TraceList";
-import { SpanTree } from "./components/SpanTree";
+import { Waterfall } from "./components/Waterfall";
 import { InspectorPane } from "./components/InspectorPane";
 import { usePolledSpans } from "./lib/usePolledSpans";
 import {
@@ -178,10 +178,16 @@ function Shell() {
         </div>
         <div style={{ ...paneContainerStyle, ...verticalRuleStyle }}>
           <div style={spansHalfStyle}>
-            <SpanTree
-              trace={activeTrace}
+            <Waterfall
+              spans={activeTrace?.spans ?? []}
               selectedSpanId={selectedSpanId}
               onSelect={onSelectSpan}
+              nowMs={nowMs}
+              emptyMessage={
+                activeTrace
+                  ? "// no spans in this trace"
+                  : "// select a trace to load its waterfall"
+              }
             />
           </div>
           <div style={inspectorHalfStyle}>
