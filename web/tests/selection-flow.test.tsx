@@ -1,12 +1,19 @@
 /*
  * selection-flow.test.tsx — RTL exercise of App.tsx's selection
- * reconciliation against a mocked usePolledSpans hook. Confirms:
- *  - first session/trace/span auto-promote when none selected;
- *  - clicking a session reveals its traces;
- *  - clicking a trace reveals its span tree;
- *  - a refresh that adds a new span keeps the prior selection;
+ * reconciliation against a mocked usePolledSpans hook. Contract
+ * (post-VOI-346 codex P2 — aggregate Details views must be reachable):
+ *  - initial load auto-promotes first session + first trace; span is
+ *    NOT auto-promoted so DetailsPane renders TRACE mode by default.
+ *  - clicking a session clears trace+span (so DetailsPane shows SESSION
+ *    aggregate). Trace pane re-populates with that session's traces but
+ *    no trace is auto-selected.
+ *  - clicking a trace reveals its span tree; span is NOT auto-promoted
+ *    so DetailsPane shows TRACE aggregate.
+ *  - clicking a span surfaces the span details.
+ *  - a refresh that adds a new span keeps the user's explicit drill.
  *  - removing the selected session promotes the next-best per
- *    reconcileSelection's contract.
+ *    reconcileSelection's contract (and re-auto-promotes its first
+ *    trace, since the session identity changed via data eviction).
  */
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -120,10 +127,11 @@ describe("App selection flow", () => {
     ).toBeGreaterThanOrEqual(1);
   });
 
-  it("auto-promotes first session, trace, and span on initial data load", () => {
+  it("auto-promotes first session and first trace on initial data load (no span)", () => {
     setMock(fixtureRows());
     render(<App />);
-    // Selected session, trace, and span buttons all carry data-selected=true.
+    // Per VOI-346 contract: initial load promotes session + first trace.
+    // Span is NOT auto-promoted so DetailsPane renders TRACE mode.
     const selectedSession = document.querySelectorAll(
       '[data-session-id][data-selected="true"]',
     );
@@ -135,10 +143,10 @@ describe("App selection flow", () => {
     );
     expect(selectedSession.length).toBe(1);
     expect(selectedTrace.length).toBe(1);
-    expect(selectedSpan.length).toBe(1);
+    expect(selectedSpan.length).toBe(0);
   });
 
-  it("clicking a second session swaps traces in the middle pane", () => {
+  it("clicking a second session swaps the trace pane and clears trace/span (SESSION mode)", () => {
     setMock(fixtureRows());
     render(<App />);
     const sessionButtons = document.querySelectorAll(
@@ -154,11 +162,17 @@ describe("App selection flow", () => {
       `[data-session-id="${secondSessionId}"]`,
     );
     expect(stillSelected?.getAttribute("data-selected")).toBe("true");
-    // Trace pane re-promotes to the new session's first trace.
+    // Per VOI-346 contract: user-initiated session change clears trace
+    // and span so DetailsPane renders SESSION mode. The middle pane
+    // still re-renders with the new session's traces — but none are
+    // pre-selected.
     const selectedTraces = document.querySelectorAll(
       '[data-trace-id][data-selected="true"]',
     );
-    expect(selectedTraces.length).toBe(1);
+    expect(selectedTraces.length).toBe(0);
+    const visibleTraces = document.querySelectorAll("[data-trace-id]");
+    // The new session has 2 traces; both render.
+    expect(visibleTraces.length).toBe(2);
   });
 
   it("clicking a trace updates the span tree", () => {
@@ -184,6 +198,14 @@ describe("App selection flow", () => {
   it("selection survives a refresh that adds one new span", () => {
     setMock(fixtureRows());
     const { rerender } = render(<App />);
+
+    // Drill into a specific span — initial load only auto-promotes
+    // session + trace, never span (VOI-346 contract), so a user-click
+    // is required to establish a span pin worth preserving.
+    const spanButtons = document.querySelectorAll(
+      "[data-span-id]",
+    ) as NodeListOf<HTMLButtonElement>;
+    fireEvent.click(spanButtons[2]!);
 
     const before = document.querySelector(
       '[data-session-id][data-selected="true"]',

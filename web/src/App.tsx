@@ -104,16 +104,48 @@ function Shell() {
     let nextTraceId = reconciled.selectedTraceId;
     let nextSpanId = reconciled.selectedSpanId;
 
+    // Session-level auto-promotion: when no valid session exists (initial
+    // load OR the prior session was evicted by data churn), fall back to
+    // visibleSessions[0]. The fallback clears trace/span only when the
+    // selected session actually changed — otherwise we'd nuke the user's
+    // existing trace/span pick on every reconcile tick.
     if (!nextSessionId) {
       nextSessionId = visibleSessions[0]?.id ?? null;
-      nextTraceId = null;
-      nextSpanId = null;
+      if (nextSessionId !== selectedSessionId) {
+        nextTraceId = null;
+        nextSpanId = null;
+      }
     }
 
     const activeSession =
       visibleSessions.find((s) => s.id === nextSessionId) ?? null;
+    // Trace-level auto-promotion: ONLY when the session identity just
+    // changed (initial load, data-churn eviction, or the user clicked a
+    // different session). When the user clicks the SAME session and
+    // explicitly cleared trace/span via onSelectSession's contract
+    // (trace=null, span=null), the session is unchanged here — leave
+    // trace null so DetailsPane renders the SESSION aggregate. Without
+    // this guard, the user can never reach the trace/session aggregate
+    // views because the deepest item is always re-promoted (codex P2
+    // 2026-05-30).
+    // Trace-level auto-promotion. The earlier logic always auto-promoted
+    // the first trace whenever none was selected; that re-promoted the
+    // first trace after the user clicked a session to view its aggregate,
+    // making the SESSION mode of DetailsPane unreachable (codex P2
+    // 2026-05-30). New rule: auto-promote ONLY when (a) the session
+    // identity just changed (initial load / data-churn fall-back), or
+    // (b) the held trace ID got evicted by data churn (selectedTraceId
+    // was non-null on entry but reconcile nulled it). When the user
+    // explicitly cleared trace via onSelectSession on the SAME session,
+    // we leave trace null so DetailsPane renders SESSION mode.
+    const sessionJustChanged = nextSessionId !== selectedSessionId;
+    const traceWasEvicted =
+      selectedTraceId !== null && reconciled.selectedTraceId === null;
     if (activeSession) {
-      if (!nextTraceId || !activeSession.traces.some((t) => t.id === nextTraceId)) {
+      const traceStillValid =
+        nextTraceId !== null &&
+        activeSession.traces.some((t) => t.id === nextTraceId);
+      if (!traceStillValid && (sessionJustChanged || traceWasEvicted)) {
         nextTraceId = activeSession.traces[0]?.id ?? null;
         nextSpanId = null;
       }
@@ -122,15 +154,19 @@ function Shell() {
       nextSpanId = null;
     }
 
+    // Span: never auto-promote. The trace aggregate is the more useful
+    // default view; the user clicks an individual span to drill in.
+    // If the held span ID becomes invalid (data eviction, user-cleared,
+    // or trace just changed), drop it — DetailsPane falls back to TRACE
+    // mode automatically.
     const activeTrace =
       activeSession?.traces.find((t) => t.id === nextTraceId) ?? null;
     if (activeTrace) {
-      if (
-        !nextSpanId ||
-        !activeTrace.spans.some((s) => spanRowId(s) === nextSpanId)
-      ) {
-        const firstSpan = activeTrace.spans[0];
-        nextSpanId = firstSpan ? spanRowId(firstSpan) : null;
+      const spanStillValid =
+        nextSpanId !== null &&
+        activeTrace.spans.some((s) => spanRowId(s) === nextSpanId);
+      if (!spanStillValid) {
+        nextSpanId = null;
       }
     } else {
       nextSpanId = null;
