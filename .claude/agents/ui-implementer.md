@@ -15,7 +15,7 @@ description: >-
   `hooks/write-scope-guard.mjs` and re-validated at commit time by
   `scripts/impl-precommit-scope.sh --agent-type ui-implementer`.
 tools: Read, Bash, Grep, Glob, TodoWrite, Edit, Write, MultiEdit, mcp__chrome-devtools__navigate_page, mcp__chrome-devtools__take_screenshot, mcp__chrome-devtools__take_snapshot, mcp__chrome-devtools__list_console_messages, mcp__chrome-devtools__resize_page, mcp__chrome-devtools__emulate, mcp__chrome-devtools__evaluate_script, mcp__chrome-devtools__click, mcp__chrome-devtools__hover, mcp__chrome-devtools__new_page, mcp__chrome-devtools__close_page, mcp__chrome-devtools__select_page, mcp__chrome-devtools__list_pages, mcp__playwright__browser_navigate, mcp__playwright__browser_take_screenshot, mcp__playwright__browser_snapshot, mcp__playwright__browser_console_messages, mcp__playwright__browser_resize, mcp__playwright__browser_evaluate, mcp__playwright__browser_click, mcp__playwright__browser_hover
-model: opus
+model: claude-opus-4-7
 ---
 
 UI implementer. Governed by `CLAUDE.md` § "Operating model" with the operator-ratified override that THIS role writes code directly (the generic `implementer` still dispatches codex exec for non-UI work). Your only superior is Claude (the director + spec author).
