@@ -18,40 +18,8 @@ import {
   groupSpansToTree,
   reconcileSelection,
   type SessionNode,
-  type SpanRow,
 } from "../src/lib/grouping";
-import { buildSyntheticForest } from "./_perfFixtures";
-
-function mk(input: {
-  traceId: string;
-  spanId: string;
-  parentSpanId?: string;
-  timestamp: string;
-  serviceName: string;
-  sessionId?: string;
-  agentSessionId?: string;
-  resourceAttributesRaw?: Record<string, string>;
-  spanAttributesRaw?: Record<string, string>;
-}): SpanRow {
-  return {
-    TraceId: input.traceId,
-    SpanId: input.spanId,
-    ParentSpanId: input.parentSpanId ?? "",
-    SpanName: "synthetic",
-    Timestamp: input.timestamp,
-    ServiceName: input.serviceName,
-    StatusCode: "OK",
-    Duration: 1_000_000,
-    AgentProject: "project",
-    AgentSessionId: input.agentSessionId ?? "",
-    AgentRunId: "",
-    SessionId: input.sessionId ?? "",
-    ProjectName: "project",
-    ResourceAttributesRaw: input.resourceAttributesRaw ?? {},
-    SpanAttributesRaw: input.spanAttributesRaw ?? {},
-    depth: 0,
-  };
-}
+import { bareSpan, buildSyntheticForest } from "./_perfFixtures";
 
 const PERF_BUDGET_AVG_MS = 50; // average of 100 invocations (worst-case env headroom)
 const PERF_BUDGET_NULL_MS = 5; // null-input fast path
@@ -103,11 +71,19 @@ function oldReconcileImpl(
 
 describe("reconcileSelection — perf on 100k-span forest (VOI-388)", () => {
   /**
-   * Pick a perf-stressful selection: claude-root sessionId + a trace owned
-   * ONLY by a deep codex descendant. This forces findTraceInSubtree to
-   * walk the entire claude subtree (NOT early-exit at depth 0 the way a
-   * codex-session sample would) — the exact O(visible-subtree-nodes)
-   * branch the doc-comment in grouping.ts promises stays sub-50ms.
+   * Pick a perf-stressful selection: claude-root sessionId + an UNKNOWN
+   * trace id. The unknown trace forces findTraceInSubtree to walk the
+   * entire claude subtree (root + every subagent + every codex grandchild)
+   * looking for the trace, never finding it — provably exercising the
+   * O(visible-subtree-nodes) recall the doc-comment in grouping.ts
+   * promises stays sub-50ms.
+   *
+   * Why not a valid descendant trace? In the default _perfFixtures shape
+   * the codex inherits its parent's TraceId via TRACEPARENT propagation,
+   * so the codex subtree shares its parent claude trace id; picking a
+   * descendant trace would early-exit at depth 0 on claudeRoot.traces.
+   * The unknown-trace pattern dodges this entirely: doesn't matter what
+   * the fixture shape is, the walk runs to completion.
    */
   function pickStressfulSelection(
     built: ReturnType<typeof buildSyntheticForest>,
@@ -116,22 +92,11 @@ describe("reconcileSelection — perf on 100k-span forest (VOI-388)", () => {
     if (!claudeRoot) {
       throw new Error("perf fixture missing a claude root");
     }
-    // Walk the subtree to find a trace owned by some descendant.
-    const stack: SessionNode[] = [...claudeRoot.children];
-    while (stack.length > 0) {
-      const node = stack.pop()!;
-      if (node.traces.length > 0 && node.traces[0]!.spans[0]) {
-        const t = node.traces[0]!;
-        const span = t.spans[0]!;
-        return {
-          sessionId: claudeRoot.id,
-          traceId: t.id,
-          spanId: span.TraceId + span.SpanId,
-        };
-      }
-      for (const c of node.children) stack.push(c);
-    }
-    throw new Error("perf fixture has no descendant-owned trace under claude root");
+    return {
+      sessionId: claudeRoot.id,
+      traceId: "voi-388-perf-not-a-real-trace",
+      spanId: "voi-388-perf-not-a-real-span",
+    };
   }
 
   it("100 invocations on a 100k-span forest average < 50ms each (claude-root + deep-descendant trace)", () => {
@@ -197,31 +162,55 @@ describe("reconcileSelection — perf on 100k-span forest (VOI-388)", () => {
     }
   });
 
-  it("all-null inputs complete in < 5ms (near-instant fast path)", () => {
+  it("all-null inputs average < 5ms across 100 iterations (near-instant fast path)", () => {
     const built = buildSyntheticForest();
+    // Warm-up so we don't include JIT cost.
+    reconcileSelection(built.forest, null, null, null);
+    const iterations = 100;
+    let outLast = reconcileSelection(built.forest, null, null, null);
     const t0 = performance.now();
-    const out = reconcileSelection(built.forest, null, null, null);
-    const elapsed = performance.now() - t0;
-    expect(out.selectedSessionId).toBeNull();
-    expect(out.selectedTraceId).toBeNull();
-    expect(out.selectedSpanId).toBeNull();
-    expect(elapsed).toBeLessThan(PERF_BUDGET_NULL_MS);
+    for (let i = 0; i < iterations; i++) {
+      outLast = reconcileSelection(built.forest, null, null, null);
+    }
+    const avgMs = (performance.now() - t0) / iterations;
+    expect(outLast.selectedSessionId).toBeNull();
+    expect(outLast.selectedTraceId).toBeNull();
+    expect(outLast.selectedSpanId).toBeNull();
+    // Averaging across many invocations smooths a single GC pause that
+    // would otherwise flake a one-shot timing assertion on a loaded CI
+    // runner (jsdom + vitest workers + the 100k-row fixture in memory).
+    expect(avgMs).toBeLessThan(PERF_BUDGET_NULL_MS);
   });
 
-  it("unknown selectedSessionId completes in < 50ms (DFS without span materialization)", () => {
+  it("unknown selectedSessionId averages < 50ms across 50 iterations (DFS without span materialization)", () => {
     const built = buildSyntheticForest();
-    const t0 = performance.now();
-    const out = reconcileSelection(
+    reconcileSelection(
       built.forest,
       "definitely-not-a-real-session",
       "definitely-not-a-real-trace",
       "definitely-not-a-real-span",
     );
-    const elapsed = performance.now() - t0;
-    expect(out.selectedSessionId).toBeNull();
-    expect(out.selectedTraceId).toBeNull();
-    expect(out.selectedSpanId).toBeNull();
-    expect(elapsed).toBeLessThan(PERF_BUDGET_UNKNOWN_MS);
+    const iterations = 50;
+    let outLast = reconcileSelection(
+      built.forest,
+      "definitely-not-a-real-session",
+      "definitely-not-a-real-trace",
+      "definitely-not-a-real-span",
+    );
+    const t0 = performance.now();
+    for (let i = 0; i < iterations; i++) {
+      outLast = reconcileSelection(
+        built.forest,
+        "definitely-not-a-real-session",
+        "definitely-not-a-real-trace",
+        "definitely-not-a-real-span",
+      );
+    }
+    const avgMs = (performance.now() - t0) / iterations;
+    expect(outLast.selectedSessionId).toBeNull();
+    expect(outLast.selectedTraceId).toBeNull();
+    expect(outLast.selectedSpanId).toBeNull();
+    expect(avgMs).toBeLessThan(PERF_BUDGET_UNKNOWN_MS);
   });
 });
 
@@ -361,15 +350,15 @@ describe("reconcileSelection — behavioral equivalence vs OLD impl", () => {
     // reachable.
     const claudeTrace = "claude-trace-X";
     const codexTrace = "codex-trace-X";
-    const rows: SpanRow[] = [
-      mk({
+    const rows = [
+      bareSpan({
         traceId: claudeTrace,
         spanId: "claude-root",
         timestamp: "2026-01-01T00:00:01.000000000",
         serviceName: "claude-code",
         sessionId: "sess-X",
       }),
-      mk({
+      bareSpan({
         traceId: codexTrace,
         spanId: "codex-root",
         timestamp: "2026-01-01T00:00:02.000000000",

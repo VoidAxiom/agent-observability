@@ -48,7 +48,7 @@ function nsTimestamp(epochMs: number): string {
   return iso.slice(0, -1).padEnd(29, "0");
 }
 
-function bareSpan(input: {
+export function bareSpan(input: {
   traceId: string;
   spanId: string;
   parentSpanId?: string;
