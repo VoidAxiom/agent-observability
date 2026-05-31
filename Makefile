@@ -9,8 +9,9 @@ help:
 	@echo "collector-down        VOI-307"
 	@echo "sdk-test              VOI-308"
 	@echo "demo                  VOI-310 (M0 acceptance gate)"
+	@echo "install-codex-shim    VOI-390"
 
-.PHONY: help clickhouse-up clickhouse-down clickhouse-migrate collector-up collector-down sdk-test demo
+.PHONY: help clickhouse-up clickhouse-down clickhouse-migrate collector-up collector-down sdk-test demo install-codex-shim
 
 clickhouse-up:
 	@test -f .env || cp .env.example .env
@@ -53,3 +54,7 @@ sdk-test:
 
 demo:
 	bash scripts/demo-smoke.sh
+
+## Help: install-codex-shim installs the VOI-390 PATH-precedence codex shim.
+install-codex-shim:
+	@bash scripts/install-codex-shim.sh
