@@ -32,11 +32,12 @@ import {
 } from "react";
 import gsap from "gsap";
 import { spanRowId, type SpanRow } from "../lib/grouping";
-import { parseTimestamp } from "../lib/grouping";
+import { earliestParseableStart, parseTimestamp } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
 import { buildEdgeKey, useCrossProcessStore } from "../lib/crossProcessStore";
 import { bestContrastTextOn } from "../lib/bestContrast";
 import { isSubagent, subagentType } from "../lib/isSubagent";
+import { formatAbsoluteEst, formatAbsoluteEstWithMs } from "../lib/formatTime";
 import "./Waterfall.css";
 
 export interface WaterfallProps {
@@ -52,11 +53,24 @@ export interface WaterfallProps {
 const ROW_HEIGHT = 24;
 const BAR_HEIGHT = 16;
 const BAR_Y_OFFSET = (ROW_HEIGHT - BAR_HEIGHT) / 2;
-const TIME_AXIS_HEIGHT = 24;
+// Base axis height for the relative-duration tick row only. When the
+// absolute EST/EDT row is also rendered (VOI-389) we add the extra
+// label-row height below; otherwise the first bar sits flush below
+// this baseline and we don't reserve empty space for a row that
+// won't appear (e.g. every Timestamp failed to parse, or innerWidth
+// is too narrow for any absolute label per the 200px slot rule).
+// Claude /code-review round-4 P3 2026-05-31.
+const TIME_AXIS_HEIGHT_RELATIVE = 24;
+const TIME_AXIS_HEIGHT_WITH_ABSOLUTE = 36;
 const LEFT_GUTTER = 0;
 const RIGHT_PAD = 8;
 const MIN_BAR_WIDTH = 1;
 const DEFAULT_WIDTH = 640;
+// Minimum innerWidth pixels per absolute EST/EDT tick label
+// (~130px label + breathing room). Lifted from the willShowAbsoluteRow
+// gate and the maxAbsoluteLabels slot count so both stay in lockstep —
+// VOI-389 round-5 codex P2 (gate-drift risk).
+const ABSOLUTE_LABEL_SLOT_PX = 200;
 
 interface BarLayout {
   span: SpanRow;
@@ -76,6 +90,10 @@ interface BarLayout {
    * 2026-05-30.
    */
   noTimestamp: boolean;
+  /** Span start in ms since epoch; Number.NaN when noTimestamp. */
+  startMs: number;
+  /** Span end in ms since epoch; Number.NaN when noTimestamp. */
+  endMs: number;
 }
 
 interface CrossEdge {
@@ -127,9 +145,24 @@ export function Waterfall({
 
   const innerWidth = Math.max(0, measuredWidth - LEFT_GUTTER - RIGHT_PAD);
 
+  // Determine whether the absolute EST/EDT label row will render at all
+  // BEFORE buildLayout so the same axis height drives bar Y and the
+  // SVG geometry. Conditions match the gates inside TimeAxis below
+  // (both use ABSOLUTE_LABEL_SLOT_PX and the same "any parseable
+  // Timestamp" predicate). VOI-389: claude /code-review round-4 P3
+  // 2026-05-31; codex round-5 collapsed the predicate to the shared
+  // earliestParseableStart helper.
+  const willShowAbsoluteRow = useMemo(() => {
+    if (Math.floor(innerWidth / ABSOLUTE_LABEL_SLOT_PX) <= 0) return false;
+    return Number.isFinite(earliestParseableStart(spans));
+  }, [spans, innerWidth]);
+  const axisHeight = willShowAbsoluteRow
+    ? TIME_AXIS_HEIGHT_WITH_ABSOLUTE
+    : TIME_AXIS_HEIGHT_RELATIVE;
+
   const layout = useMemo(
-    () => buildLayout(spans, innerWidth, nowMs),
-    [spans, innerWidth, nowMs],
+    () => buildLayout(spans, innerWidth, nowMs, axisHeight),
+    [spans, innerWidth, nowMs, axisHeight],
   );
 
   const ancestorSet = useMemo(() => {
@@ -153,7 +186,7 @@ export function Waterfall({
   // reserving a row for it leaves a phantom empty band at the bottom of
   // the SVG with no matching bar.
   const totalHeight =
-    TIME_AXIS_HEIGHT + layout.bars.length * ROW_HEIGHT + BAR_Y_OFFSET;
+    axisHeight + layout.bars.length * ROW_HEIGHT + BAR_Y_OFFSET;
 
   return (
     <section
@@ -175,8 +208,9 @@ export function Waterfall({
             innerWidth={innerWidth}
             durationMs={layout.durationMs}
             originX={LEFT_GUTTER}
-            height={TIME_AXIS_HEIGHT}
+            height={axisHeight}
             totalHeight={totalHeight}
+            traceStartMs={layout.traceStartMs}
           />
           {layout.bars.map((bar) => (
             <WaterfallBar
@@ -220,15 +254,22 @@ interface LayoutResult {
   bars: BarLayout[];
   durationMs: number;
   crossEdges: CrossEdge[];
+  /**
+   * Trace's earliest parseable span start (ms since epoch). NaN when
+   * every span's Timestamp failed to parse. VOI-389 — used to derive
+   * absolute EST/EDT tick labels on the time axis.
+   */
+  traceStartMs: number;
 }
 
 function buildLayout(
   spans: SpanRow[],
   innerWidth: number,
   nowMs: number,
+  axisHeight: number,
 ): LayoutResult {
   if (spans.length === 0 || innerWidth <= 0) {
-    return { bars: [], durationMs: 0, crossEdges: [] };
+    return { bars: [], durationMs: 0, crossEdges: [], traceStartMs: Number.NaN };
   }
 
   const spanById = new Map<string, SpanRow>();
@@ -335,13 +376,15 @@ function buildLayout(
       spanId: id,
       rowIndex: laneIndex,
       x: LEFT_GUTTER + clampedX,
-      y: TIME_AXIS_HEIGHT + laneIndex * ROW_HEIGHT + BAR_Y_OFFSET,
+      y: axisHeight + laneIndex * ROW_HEIGHT + BAR_Y_OFFSET,
       width: visibleWidth,
       family,
       accent,
       ancestors: ancestorChain.get(id) ?? new Set(),
       isRunning,
       noTimestamp: false,
+      startMs,
+      endMs,
     });
   });
 
@@ -362,13 +405,15 @@ function buildLayout(
       spanId: id,
       rowIndex: laneIndex,
       x: LEFT_GUTTER,
-      y: TIME_AXIS_HEIGHT + laneIndex * ROW_HEIGHT + BAR_Y_OFFSET,
+      y: axisHeight + laneIndex * ROW_HEIGHT + BAR_Y_OFFSET,
       width: MIN_BAR_WIDTH,
       family,
       accent,
       ancestors: ancestorChain.get(id) ?? new Set(),
       isRunning: false,
       noTimestamp: true,
+      startMs: Number.NaN,
+      endMs: Number.NaN,
     });
   }
 
@@ -410,7 +455,12 @@ function buildLayout(
     });
   }
 
-  return { bars, durationMs: traceDuration, crossEdges };
+  return {
+    bars,
+    durationMs: traceDuration,
+    crossEdges,
+    traceStartMs: hasAnyValid ? minStart : Number.NaN,
+  };
 }
 
 function isStatusUnset(code: string): boolean {
@@ -463,9 +513,24 @@ function WaterfallBar({
   const labelColorVar = bestContrastTextOn(bar.accent);
   const labelFill = `var(${labelColorVar})`;
 
-  const titleText = bar.noTimestamp
-    ? `${label} — no timestamp (rendered as synthetic minimum-width bar)`
-    : label;
+  // VOI-389: tooltip carries absolute EST/EDT start + end so the operator
+  // can correlate a bar's hover position to wall-clock time without
+  // popping out to the inspector. The formatter already emits the
+  // " EST"/" EDT" suffix; we don't double-append. For in-flight spans
+  // (any reason isRunning fires — Duration===0 OR Duration>0 within
+  // polling-fresh window) the "ended" line would lie because the bar
+  // is animated as running. Print "(still running)" instead. The guard
+  // is `bar.isRunning` ALONE — gating on Duration===0 too undercovers
+  // the polling-window branch and leaves the pulsing bar/static-end
+  // contradiction in place. Claude /code-review rounds 2-3 2026-05-31.
+  let titleText: string;
+  if (bar.noTimestamp) {
+    titleText = `${label} — no timestamp (rendered as synthetic minimum-width bar)\nstarted --\nended --`;
+  } else if (bar.isRunning) {
+    titleText = `${label}\nstarted ${formatAbsoluteEstWithMs(bar.startMs)}\nended (still running)`;
+  } else {
+    titleText = `${label}\nstarted ${formatAbsoluteEstWithMs(bar.startMs)}\nended ${formatAbsoluteEstWithMs(bar.endMs)}`;
+  }
   const ariaLabel = bar.noTimestamp
     ? `${bar.span.SpanName} — depth ${bar.span.depth} — no timestamp`
     : `${bar.span.SpanName} — depth ${bar.span.depth}`;
@@ -554,6 +619,13 @@ interface TimeAxisProps {
   originX: number;
   height: number;
   totalHeight: number;
+  /**
+   * Trace start in ms since epoch — NaN when no span Timestamp parsed.
+   * VOI-389: drives the second row of axis labels (absolute EST/EDT
+   * wall-clock at each major tick). Hidden when NaN so we don't render
+   * a row of "--" placeholders that crowd the relative-duration labels.
+   */
+  traceStartMs: number;
 }
 
 function TimeAxis({
@@ -562,9 +634,54 @@ function TimeAxis({
   originX,
   height,
   totalHeight,
+  traceStartMs,
 }: TimeAxisProps) {
   if (innerWidth <= 0 || durationMs <= 0) return null;
   const ticks = computeTickPositions(durationMs);
+  const showAbsoluteLabels = Number.isFinite(traceStartMs);
+  // Cap absolute-time labels at ~one per 200px (spec § "Axis ticks") so
+  // we never paint overlapping HH:MM:SS strings on narrow viewports.
+  // No lower floor — when the inner axis is too narrow to fit even one
+  // ~130px-wide "HH:MM:SS AM/PM EDT" label per ~200px slot, omit the
+  // absolute-time row entirely rather than crowding the axis. Spec
+  // permits 3-5 labels at typical widths; at sub-200px the relative-
+  // duration ticks still render. Claude /code-review P2 2026-05-31.
+  const maxAbsoluteLabels = Math.min(5, Math.floor(innerWidth / ABSOLUTE_LABEL_SLOT_PX));
+  // Pick evenly-spaced major-tick indices that anchor both endpoints:
+  // for K labels and N majors, picks indices round(i * (N-1) / (K-1))
+  // so index 0 → first major and index K-1 → last major; intermediate
+  // labels space evenly between. floor(i*N/K) (round-2 fix) skipped
+  // the last major entirely, leaving up to 20% of the right edge blank
+  // on traces whose N wasn't a multiple of K. Claude /code-review
+  // round-3 P3 2026-05-31.
+  const majorTicks = ticks.filter((t) => t.major);
+  const absoluteMsSet = new Set<number>();
+  if (showAbsoluteLabels && majorTicks.length > 0) {
+    const labelCount = Math.min(maxAbsoluteLabels, majorTicks.length);
+    if (labelCount === 1) {
+      absoluteMsSet.add(majorTicks[0]!.ms);
+    } else {
+      for (let i = 0; i < labelCount; i += 1) {
+        const idx = Math.round((i * (majorTicks.length - 1)) / (labelCount - 1));
+        absoluteMsSet.add(majorTicks[idx]!.ms);
+      }
+    }
+  }
+
+  // VOI-389 round-5 (codex P2): the absolute EST/EDT tick label is
+  // ~130px wide ("HH:MM:SS AM/PM EDT"). Rendered at x+2 with default
+  // textAnchor=start, a label whose x is anywhere near the right edge
+  // of innerWidth runs past the SVG boundary and gets clipped (SVG
+  // overflow defaults to hidden). For ticks too close to the right
+  // edge, anchor end-aligned at x-2 so the label grows leftward
+  // instead — losing the timezone suffix was the exact regression.
+  // The major-tick numeric labels (~36px wide) get the same treatment
+  // for symmetry; they previously fit only because the strings were
+  // short. Anchor flags are computed lazily inside the major branch
+  // so minor ticks (~80% of ticks) don't pay the cost.
+  const ABSOLUTE_LABEL_PX = 130;
+  const TICK_LABEL_PX = 36;
+  const rightEdge = originX + innerWidth;
 
   return (
     <g aria-hidden="true">
@@ -579,15 +696,34 @@ function TimeAxis({
               y1={height - 6}
               y2={totalHeight}
             />
-            {major ? (
-              <text
-                className="voi-waterfall-tick-label"
-                x={x + 2}
-                y={height - 8}
-              >
-                {formatTickMs(ms)}
-              </text>
-            ) : null}
+            {major ? (() => {
+              const showAbsolute = absoluteMsSet.has(ms);
+              const tickAnchorEnd = rightEdge - x < TICK_LABEL_PX;
+              const absoluteAnchorEnd = rightEdge - x < ABSOLUTE_LABEL_PX;
+              return (
+                <>
+                  <text
+                    className="voi-waterfall-tick-label"
+                    x={tickAnchorEnd ? x - 2 : x + 2}
+                    y={height - 8}
+                    textAnchor={tickAnchorEnd ? "end" : "start"}
+                  >
+                    {formatTickMs(ms)}
+                  </text>
+                  {showAbsolute ? (
+                    <text
+                      className="voi-waterfall-tick-label"
+                      data-absolute-tick="true"
+                      x={absoluteAnchorEnd ? x - 2 : x + 2}
+                      y={height - 20}
+                      textAnchor={absoluteAnchorEnd ? "end" : "start"}
+                    >
+                      {formatAbsoluteEst(traceStartMs + ms)}
+                    </text>
+                  ) : null}
+                </>
+              );
+            })() : null}
           </g>
         );
       })}

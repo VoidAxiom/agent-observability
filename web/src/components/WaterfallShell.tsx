@@ -7,8 +7,10 @@
  * surface needs to read it.
  */
 
-import { type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { Waterfall, type WaterfallProps } from "./Waterfall";
+import { earliestParseableStart } from "../lib/grouping";
+import { formatAbsoluteEstWithDate } from "../lib/formatTime";
 
 export interface WaterfallShellProps extends WaterfallProps {
   /**
@@ -42,7 +44,15 @@ export function WaterfallShell({
   ...waterfallProps
 }: WaterfallShellProps) {
   const spans = waterfallProps.spans;
-  const chipText = `// waterfall · ${spans.length} spans · ${durationSeconds.toFixed(3)}s`;
+  // VOI-389: surface the trace's wall-clock start as an EST/EDT chip so
+  // the operator can read absolute context without leaving the waterfall.
+  // Uses the shared earliestParseableStart helper (grouping.ts) — VOI-389
+  // round-5 codex altitude fix collapsed three open-coded copies of this
+  // loop into one. Returns NaN when no span has a parseable Timestamp,
+  // which the formatter's fallback renders as "--".
+  const rootStartMs = useMemo(() => earliestParseableStart(spans), [spans]);
+  const startedAbs = formatAbsoluteEstWithDate(rootStartMs);
+  const chipText = `// waterfall · ${spans.length} spans · ${durationSeconds.toFixed(3)}s · started ${startedAbs}`;
 
   return (
     // Plain <div> — the inner <Waterfall> is the landmark; nesting three

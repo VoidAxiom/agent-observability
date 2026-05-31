@@ -314,6 +314,134 @@ describe("SessionSidebar", () => {
     ).toBeNull();
   });
 
+  it("renders absolute EST/EDT last-activity time on each row + title carries the date (VOI-389)", () => {
+    // Pin lastActivity to a deterministic UTC instant so the assertion
+    // doesn't depend on Date.now() timing. July 15 2026 14:32:47 UTC ->
+    // 10:32:47 AM EDT in America/New_York.
+    const lastActivityMs = Date.UTC(2026, 6, 15, 14, 32, 47);
+    const s = makeSession({ id: "abc", serviceName: "claude-code" });
+    s.lastActivity = lastActivityMs;
+    const { container } = render(
+      <SessionSidebar
+        sessions={[s]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
+        nowMs={lastActivityMs + 5000}
+      />,
+    );
+    // The row meta line carries the absolute clock time.
+    const timeMeta = container.querySelector('[data-meta-time="true"]');
+    expect(timeMeta?.textContent ?? "").toContain("10:32:47 AM EDT");
+    // CSS-tooltip channel: the inner label span carries BOTH the
+    // existing service.name signal AND the new wall-clock info, so
+    // hover produces ONE popover (not two stacked). The outer button
+    // exposes the same string via a non-tooltip data attribute for
+    // tests / screen-readers.
+    const row = container.querySelector('[data-session-id="abc"]') as HTMLElement;
+    expect(row.getAttribute("data-last-activity") ?? "").toMatch(/Jul 15, 10:32:47 AM EDT/);
+    expect(row.getAttribute("data-last-activity") ?? "").toContain("5s ago");
+    // No data-tooltip on the outer button — that would stack with the
+    // inner span's tooltip via :hover propagation up the ancestor chain.
+    expect(row.getAttribute("data-tooltip")).toBeNull();
+    // The inner label span's data-tooltip carries the merged content
+    // (find by content prefix to skip the StatusDot's tooltip).
+    const tooltipsInRow = Array.from(row.querySelectorAll('[data-tooltip]'));
+    const labelTooltip = tooltipsInRow
+      .map((el) => el.getAttribute("data-tooltip") ?? "")
+      .find((s) => s.startsWith("service.name="));
+    expect(labelTooltip).toBeDefined();
+    expect(labelTooltip!).toMatch(/Jul 15, 10:32:47 AM EDT/);
+    expect(labelTooltip!).toContain("5s ago");
+  });
+
+  it("StatusDot tooltip says 'last activity unknown' instead of '0s ago' when time is sentinel (round-4 P2)", () => {
+    // Without the null propagation the StatusDot tooltip read
+    // "stale, last activity 0s ago" while the row label said
+    // "last_activity unknown" — two contradictory recency claims for
+    // the same session. Now the dot says "unknown" too.
+    const s = makeSession({ id: "no-time", serviceName: "claude-code" });
+    s.lastActivity = -8.64e15;
+    const { container } = render(
+      <SessionSidebar
+        sessions={[s]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
+        nowMs={Date.now()}
+      />,
+    );
+    const row = container.querySelector('[data-session-id="no-time"]') as HTMLElement;
+    const dot = row.querySelector('[role="img"]') as HTMLElement;
+    expect(dot.getAttribute("title") ?? "").toBe("stale, last activity unknown");
+    expect(dot.getAttribute("title") ?? "").not.toContain("0s ago");
+  });
+
+  it("emits exactly ONE data-tooltip per row — no nested CSS popovers (Claude /code-review round-3 P2)", () => {
+    // Regression for the nested-data-tooltip stacking bug. The CSS
+    // :hover pseudo-class applies to ancestors of the hovered element,
+    // so two data-tooltips in the same row triggered two simultaneous
+    // ::after popovers. The merged-into-inner pattern keeps ONE popover.
+    const s = makeSession({ id: "single-tooltip", serviceName: "claude-code" });
+    s.lastActivity = Date.UTC(2026, 6, 15, 14, 32, 47);
+    const { container } = render(
+      <SessionSidebar
+        sessions={[s]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
+        nowMs={Date.UTC(2026, 6, 15, 14, 32, 52)}
+      />,
+    );
+    const row = container.querySelector('[data-session-id="single-tooltip"]') as HTMLElement;
+    // Count data-tooltip attributes within the row subtree (inclusive).
+    const tooltips = row.querySelectorAll('[data-tooltip]');
+    // Allow the status dot to also carry its own tooltip (existing).
+    // The button itself must NOT carry data-tooltip, and the count of
+    // tooltips inside the row should match the pre-VOI-389 baseline +
+    // zero additions on the button.
+    expect(row.hasAttribute("data-tooltip")).toBe(false);
+    // The inner label span is the SINGLE tooltip-bearing element added
+    // by VOI-389 — pre-existing status dot tooltip is separate.
+    const labelTooltips = Array.from(tooltips).filter(
+      (el) => el.getAttribute("data-tooltip")?.includes("service.name"),
+    );
+    expect(labelTooltips.length).toBe(1);
+  });
+
+  it("sentinel-guards lastActivity: DISTANT_PAST renders '--' meta + 'unknown' title (P1 2026-05-31)", () => {
+    // Codex /code-review flagged the leak: session.lastActivity === -8.64e15
+    // makes ageSeconds ~8.64e12 and the title becomes "last_activity --
+    // (8640000000000s ago)". The guard collapses both the meta line's
+    // value and the title to a clean "unknown" string when the time is
+    // not real.
+    const s = makeSession({ id: "stale", serviceName: "claude-code" });
+    s.lastActivity = -8.64e15;
+    const { container } = render(
+      <SessionSidebar
+        sessions={[s]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
+        nowMs={Date.now()}
+      />,
+    );
+    const timeMeta = container.querySelector('[data-meta-time="true"]');
+    expect(timeMeta?.textContent ?? "").toBe("// last --");
+    const row = container.querySelector('[data-session-id="stale"]') as HTMLElement;
+    expect(row.getAttribute("data-last-activity") ?? "").toBe("last_activity unknown");
+    // The garbage value MUST NOT appear anywhere in the rendered DOM
+    // (including inside the inner label span's merged data-tooltip).
+    expect(container.textContent ?? "").not.toContain("8640000000000");
+    for (const el of Array.from(row.querySelectorAll('[data-tooltip]'))) {
+      expect(el.getAttribute("data-tooltip") ?? "").not.toContain("8640000000000");
+    }
+  });
+
   it("invokes onSelect with the session id when row clicked", () => {
     const onSelect = vi.fn();
     const sessions = [makeSession({ id: "abc", serviceName: "claude-code" })];

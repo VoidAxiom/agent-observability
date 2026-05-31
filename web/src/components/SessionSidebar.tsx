@@ -24,6 +24,11 @@ import {
   type SessionNode,
 } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
+import {
+  formatAbsoluteEst,
+  formatAbsoluteEstWithDate,
+  isAbsoluteTimeAvailable,
+} from "../lib/formatTime";
 
 export interface SessionSidebarProps {
   sessions: SessionNode[];
@@ -224,10 +229,24 @@ function SessionRow({
 }: SessionRowProps) {
   const accent = dominantFamilyAccent(node);
   const status = activityStatus(node, nowMs);
-  const lastActivityAgeSeconds = Math.max(
-    0,
-    Math.round((nowMs - node.lastActivity) / 1000),
-  );
+  // Absolute EST/EDT clock time of the most recent activity. VOI-389 —
+  // the operator asked for wall-clock visibility; the relative-seconds
+  // form alone hid which actual minute of the day a session last ran.
+  // Falls back to "--" when lastActivity is the DISTANT_PAST sentinel.
+  const lastActivityAbs = formatAbsoluteEst(node.lastActivity);
+  const hasAbsoluteTime = isAbsoluteTimeAvailable(node.lastActivity);
+  // Sentinel-guard the relative age: without it,
+  //   lastActivity === -8.64e15 → ageSeconds ≈ 8.64e12 → title leaks
+  //   "last_activity -- (8640000000000s ago)".
+  // StatusDot accepts `null` to render "last activity unknown" — passing
+  // 0 would say "0s ago" and contradict the row-level "unknown" message
+  // (Claude /code-review rounds 2 + 4 2026-05-31).
+  const lastActivityAgeSeconds = hasAbsoluteTime
+    ? Math.max(0, Math.round((nowMs - node.lastActivity) / 1000))
+    : null;
+  const lastActivityTitle = hasAbsoluteTime
+    ? `last_activity ${formatAbsoluteEstWithDate(node.lastActivity)} (${lastActivityAgeSeconds}s ago)`
+    : "last_activity unknown";
 
   // Per-depth indentation. The wrapper carries the padding so the
   // disclosure triangle's hit target ALSO shifts right with depth —
@@ -312,6 +331,14 @@ function SessionRow({
         data-session-id={node.id}
         data-kind={node.kind}
         data-depth={depth}
+        // Wall-clock hover text rides on the inner label span's
+        // data-tooltip below — a second data-tooltip on this button
+        // would stack two CSS popovers on hover (inner :hover
+        // propagates up the ancestor chain so both ::after rules
+        // fire). Claude /code-review round-3 P2 2026-05-31. The
+        // attribute below is a plain data hook for tests / screen-
+        // readers, NOT a CSS tooltip trigger.
+        data-last-activity={lastActivityTitle}
         style={rowStyle}
       >
         {selected ? (
@@ -335,7 +362,11 @@ function SessionRow({
           />
           <span
             style={sessionLabelStyle}
-            data-tooltip={`service.name=${node.serviceName}`}
+            // Single CSS-tooltip channel carries both the existing
+            // service.name signal and the new wall-clock info so the
+            // row gets ONE popover on hover (Claude /code-review
+            // round-3 P2 2026-05-31).
+            data-tooltip={`service.name=${node.serviceName} · ${lastActivityTitle}`}
           >
             {node.displayLabel}
           </span>
@@ -343,6 +374,9 @@ function SessionRow({
         </span>
         <span style={sessionMetaStyle}>
           {buildMetaLine(node)}
+        </span>
+        <span style={sessionMetaStyle} data-meta-time="true">
+          {`// last ${lastActivityAbs}`}
         </span>
       </button>
     </div>
@@ -377,7 +411,15 @@ interface StatusDotProps {
   status: ActivityStatus;
   hasError: boolean;
   accent: string;
-  ageSeconds: number;
+  /**
+   * Relative-seconds age, or `null` when the underlying lastActivity is
+   * the DISTANT_PAST sentinel. `null` switches the tooltip from
+   * "<state>, last activity Ns ago" to "<state>, last activity
+   * unknown" so the dot's hover doesn't contradict the row-level
+   * "last_activity unknown" message. Claude /code-review round-4 P2
+   * 2026-05-31.
+   */
+  ageSeconds: number | null;
 }
 
 function StatusDot({ status, hasError, accent, ageSeconds }: StatusDotProps) {
@@ -402,7 +444,10 @@ function StatusDot({ status, hasError, accent, ageSeconds }: StatusDotProps) {
   } else {
     label = "stale";
   }
-  const tooltipText = `${label}, last activity ${ageSeconds}s ago`;
+  const tooltipText =
+    ageSeconds === null
+      ? `${label}, last activity unknown`
+      : `${label}, last activity ${ageSeconds}s ago`;
   return (
     <span
       aria-label={label}

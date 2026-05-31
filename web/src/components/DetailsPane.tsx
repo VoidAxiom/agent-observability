@@ -27,6 +27,11 @@ import {
   type GroupedAttributes,
 } from "../lib/attributeGroups";
 import { formatHeroDurationMs, formatHeroMagnitude } from "../lib/formatHero";
+import {
+  formatAbsoluteEst,
+  formatAbsoluteEstWithDate,
+  isAbsoluteTimeAvailable,
+} from "../lib/formatTime";
 import "./DetailsPane.css";
 
 export interface DetailsPaneProps {
@@ -212,6 +217,12 @@ function TraceDetails({ trace }: TraceDetailsProps) {
   const durationDisplay = formatHeroDurationMs(trace.durationSeconds * 1000);
   const durationExact = `${trace.durationSeconds.toFixed(6)}s`;
 
+  // VOI-389 round-5 (codex P2 altitude fix, follow-up): trace.rootStart
+  // is now trustworthy — grouping filters the DISTANT_PAST sentinel
+  // BEFORE picking the trace min, so partially-valid traces no longer
+  // poison this value. Consume the prop directly instead of re-deriving.
+  const hasRootStart = isAbsoluteTimeAvailable(trace.rootStart);
+
   return (
     <section aria-label="Details" style={paneStyle}>
       <header style={headerStyle}>
@@ -239,6 +250,18 @@ function TraceDetails({ trace }: TraceDetailsProps) {
         <MiniStat label="spans" value={String(trace.spanCount)} />
         <MiniStat label="errors" value={String(errorCount)} />
         <MiniStat label="services" value={String(services.length)} />
+        {/* VOI-389: absolute EST wall-clock start. trace.rootStart is
+            the earliest PARSEABLE Timestamp across the trace's spans
+            (grouping filters the DISTANT_PAST sentinel before picking
+            the min — VOI-389 round-5 codex altitude fix). All-unparseable
+            still falls back to the sentinel, which the formatter
+            renders as "--" and the title suppresses (see
+            traceStartTitle above). */}
+        <MiniStat
+          label="started"
+          value={formatAbsoluteEst(trace.rootStart)}
+          title={hasRootStart ? formatAbsoluteEstWithDate(trace.rootStart) : undefined}
+        />
       </div>
 
       <p style={summaryCommentStyle}>
@@ -259,10 +282,20 @@ interface SessionDetailsProps {
 
 function SessionDetails({ session, nowMs }: SessionDetailsProps) {
   const cyan = "var(--accent-3)";
-  const lastActivitySeconds = Math.max(
-    0,
-    Math.round((nowMs - session.lastActivity) / 1000),
-  );
+  // VOI-389: prefer absolute EST wall-clock for the visible value; keep
+  // the relative-seconds form in the hover title so operators correlating
+  // against logs still get the secondary signal. Guard against the
+  // DISTANT_PAST sentinel — without this, lastActivitySeconds is ~8.64e12
+  // and the title leaks "-- · 8640000000000s ago" (Claude /code-review
+  // P1 2026-05-31).
+  const lastActivityAbs = formatAbsoluteEst(session.lastActivity);
+  const hasAbsoluteTime = isAbsoluteTimeAvailable(session.lastActivity);
+  const lastActivitySeconds = hasAbsoluteTime
+    ? Math.max(0, Math.round((nowMs - session.lastActivity) / 1000))
+    : null;
+  const lastActivityTitle = hasAbsoluteTime
+    ? `${formatAbsoluteEstWithDate(session.lastActivity)} · ${lastActivitySeconds}s ago`
+    : "last activity unknown";
 
   const heroDisplay = formatHeroMagnitude(session.spanCount);
   const heroExact = session.spanCount.toLocaleString("en-US");
@@ -292,7 +325,11 @@ function SessionDetails({ session, nowMs }: SessionDetailsProps) {
 
       <div style={miniStatsRowStyle}>
         <MiniStat label="traces" value={String(session.traceCount)} />
-        <MiniStat label="last_activity" value={`${lastActivitySeconds}s ago`} />
+        <MiniStat
+          label="last_activity"
+          value={lastActivityAbs}
+          title={lastActivityTitle}
+        />
       </div>
 
       <p style={summaryCommentStyle}>
@@ -327,11 +364,17 @@ function HeroCell({ numeral }: HeroCellProps) {
 interface MiniStatProps {
   label: string;
   value: string;
+  /**
+   * Optional title for hover — used by VOI-389 to surface the date +
+   * relative-seconds form on the EST absolute-time MiniStats without
+   * losing the secondary context.
+   */
+  title?: string;
 }
 
-function MiniStat({ label, value }: MiniStatProps) {
+function MiniStat({ label, value, title }: MiniStatProps) {
   return (
-    <div style={miniStatStyle}>
+    <div style={miniStatStyle} title={title}>
       <span style={miniStatValueStyle}>{value}</span>
       <span style={miniStatLabelStyle}>{`// ${label}`}</span>
     </div>
