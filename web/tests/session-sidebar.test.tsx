@@ -24,11 +24,16 @@ function span(o: Partial<SpanRow> & { SpanId: string }): SpanRow {
   };
 }
 
+import type { SessionKind, SessionNode } from "../src/lib/grouping";
+
 function makeSession(o: {
   id: string;
   serviceName: string;
   hasError?: boolean;
   spanName?: string;
+  kind?: SessionKind;
+  parentId?: string | null;
+  children?: SessionNode[];
 }): SessionGroup {
   const s = span({
     SpanId: `${o.id}-root`,
@@ -62,27 +67,43 @@ function makeSession(o: {
         spans: [s],
       },
     ],
+    // VOI-386 tree fields. Default flat; tests that need nesting pass
+    // explicit `children` so the forest assembles as expected.
+    kind: o.kind ?? "claude",
+    parentId: o.parentId ?? null,
+    children: o.children ?? [],
+    spans: [s],
+    descendantSpanCount: 0,
+    descendantHasError: false,
   };
 }
 
+const NOOP_TOGGLE = () => undefined;
+const EMPTY_EXPANDED: ReadonlySet<string> = new Set<string>();
+
 describe("SessionSidebar", () => {
-  it("renders one group header per distinct service.name", () => {
+  it("renders a kind chip per node — replaces VOI-346 bucket-by-service headers (VOI-386)", () => {
+    // The pre-VOI-386 sidebar grouped roots under serviceName headers
+    // (claude-code / codex_exec / agent-obs-sdk). The forest now nests by
+    // tree topology, and the per-row kind chip carries the same visual
+    // signal. Assert the chip element exists for each kind.
     const sessions = [
-      makeSession({ id: "s1", serviceName: "claude-code" }),
-      makeSession({ id: "s2", serviceName: "codex_exec" }),
-      makeSession({ id: "s3", serviceName: "agent-obs-sdk" }),
+      makeSession({ id: "s1", serviceName: "claude-code", kind: "claude" }),
+      makeSession({ id: "s2", serviceName: "codex_exec", kind: "codex" }),
+      makeSession({ id: "s3", serviceName: "agent-obs-sdk", kind: "claude" }),
     ];
-    render(
+    const { container } = render(
       <SessionSidebar
         sessions={sessions}
         selectedSessionId={null}
         onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
         nowMs={Date.now()}
       />,
     );
-    expect(screen.getByText("claude-code")).toBeDefined();
-    expect(screen.getByText("codex_exec")).toBeDefined();
-    expect(screen.getByText("agent-obs-sdk")).toBeDefined();
+    expect(container.querySelector('[data-kind-chip="claude"]')).not.toBeNull();
+    expect(container.querySelector('[data-kind-chip="codex"]')).not.toBeNull();
   });
 
   it("renders empty-state placeholder when no sessions", () => {
@@ -91,6 +112,8 @@ describe("SessionSidebar", () => {
         sessions={[]}
         selectedSessionId={null}
         onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
         nowMs={Date.now()}
         emptyMessage="// awaiting"
       />,
@@ -113,6 +136,8 @@ describe("SessionSidebar", () => {
         sessions={sessions}
         selectedSessionId="s1"
         onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
         nowMs={Date.now()}
       />,
     );
@@ -135,10 +160,52 @@ describe("SessionSidebar", () => {
         sessions={sessions}
         selectedSessionId={null}
         onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
         nowMs={Date.now()}
       />,
     );
     expect(screen.getByLabelText("error")).toBeDefined();
+  });
+
+  it("parent row surfaces error when ONLY a descendant has errored (codex P2 2026-05-31)", () => {
+    // descendantHasError is rolled up by finalizeSubtree + sessionsFilter
+    // so a collapsed parent's status dot still tells the operator that
+    // work failed one level down. Without this, an error in a subagent
+    // or codex child stays silent behind the parent's normal dot.
+    const childErr: SessionGroup = {
+      ...makeSession({ id: "child", serviceName: "claude-code", hasError: true }),
+      kind: "subagent",
+      parentId: "parent",
+    };
+    const parent: SessionGroup = {
+      ...makeSession({ id: "parent", serviceName: "claude-code" }),
+      // Parent itself has no error; the rolled-up flag is what carries
+      // the failure signal up the tree.
+      hasError: false,
+      descendantHasError: true,
+      children: [childErr],
+    };
+    render(
+      <SessionSidebar
+        sessions={[parent]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
+        nowMs={Date.now()}
+      />,
+    );
+    // The parent row's status dot uses the error variant. The child is
+    // collapsed by default, so the only error dot visible without
+    // expansion is the parent's — scope the assertion to the parent's
+    // own row.
+    const parentRow = document.querySelector(
+      '[data-session-id="parent"]',
+    ) as HTMLElement | null;
+    expect(parentRow).not.toBeNull();
+    const parentErrDot = parentRow!.querySelector('[aria-label="error"]');
+    expect(parentErrDot).not.toBeNull();
   });
 
   it("error session dot uses --accent-2 (NOT magenta --accent-1) to avoid colliding with selection bar", () => {
@@ -150,6 +217,8 @@ describe("SessionSidebar", () => {
         sessions={sessions}
         selectedSessionId="s1"
         onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
         nowMs={Date.now()}
       />,
     );
@@ -171,6 +240,8 @@ describe("SessionSidebar", () => {
         sessions={sessions}
         selectedSessionId={null}
         onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
         nowMs={Date.now()}
         truncated={true}
       />,
@@ -197,6 +268,8 @@ describe("SessionSidebar", () => {
         sessions={[]}
         selectedSessionId={null}
         onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
         nowMs={Date.now()}
         emptyMessage="// no sessions"
         truncated={true}
@@ -215,6 +288,8 @@ describe("SessionSidebar", () => {
         sessions={sessions}
         selectedSessionId={null}
         onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
         nowMs={Date.now()}
       />,
     );
@@ -228,6 +303,8 @@ describe("SessionSidebar", () => {
         sessions={sessions}
         selectedSessionId={null}
         onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
         nowMs={Date.now()}
         truncated={false}
       />,
@@ -245,6 +322,8 @@ describe("SessionSidebar", () => {
         sessions={sessions}
         selectedSessionId={null}
         onSelect={onSelect}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
         nowMs={Date.now()}
       />,
     );

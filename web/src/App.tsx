@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
 } from "react";
@@ -14,9 +15,12 @@ import { DetailsPane } from "./components/DetailsPane";
 import { LiveHistoryTabs, type TabKey } from "./components/LiveHistoryTabs";
 import { usePolledSpans } from "./lib/usePolledSpans";
 import {
+  activityStatus,
+  findNodeById,
   reconcileSelection,
   spanRowId,
   type SessionGroup,
+  type SessionNode,
   type SpanRow,
   type TraceGroup,
 } from "./lib/grouping";
@@ -49,6 +53,16 @@ function Shell() {
   const [expandedTraceIds, setExpandedTraceIds] = useState<Set<string>>(
     () => new Set(),
   );
+  // VOI-386: per-node expansion state mirroring expandedTraceIds. Root
+  // claude nodes auto-expand on first appearance (useEffect below);
+  // subagent + codex nodes start collapsed so the operator opts in to
+  // depth. autoExpandedSeenRef tracks which root ids we've already
+  // auto-expanded so a user collapse isn't undone the next time the
+  // sessions array reference changes.
+  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const autoExpandedSeenRef = useRef<Set<string>>(new Set());
   const [waterfallCollapsed, setWaterfallCollapsed] = useState<boolean>(false);
 
   // Keep the tab in sync with browser back/forward (the user may navigate
@@ -76,8 +90,19 @@ function Shell() {
     () => (tab === "live" ? activeSessions : sessions),
     [tab, activeSessions, sessions],
   );
-  const activeCount = activeSessions.length;
-  const totalCount = sessions.length;
+  // VOI-386: counts walk the whole forest so subagent + codex children
+  // count toward "// live · 3 of 8 sessions active", not just root claude
+  // sessions. activeCount counts ONLY nodes whose own activityStatus is
+  // "active" — filterActive RETAINS inactive ancestors when a descendant
+  // is active (so the parent's row is reachable in the sidebar), but those
+  // ancestors don't satisfy the Live predicate themselves and would
+  // disagree with the row status dots if counted as active (codex P2
+  // 2026-05-31).
+  const activeCount = useMemo(
+    () => countActiveNodes(activeSessions, nowMs),
+    [activeSessions, nowMs],
+  );
+  const totalCount = useMemo(() => countAllNodes(sessions), [sessions]);
 
   // Reconcile selection against the VISIBLE sessions set so when the user
   // switches Live → History (or vice versa) we don't keep a selection that
@@ -117,8 +142,9 @@ function Shell() {
       }
     }
 
-    const activeSession =
-      visibleSessions.find((s) => s.id === nextSessionId) ?? null;
+    // VOI-386: tree-aware lookup so a previously-selected subagent / codex
+    // child node is preserved, not nulled because it isn't a top-level root.
+    const activeSession = findNodeById(visibleSessions, nextSessionId);
     // Trace-level auto-promotion: ONLY when the session identity just
     // changed (initial load, data-churn eviction, or the user clicked a
     // different session). When the user clicks the SAME session and
@@ -189,26 +215,110 @@ function Shell() {
   // of a long-running tab, AND a re-emitted trace_id (fixture replay,
   // idempotent rerun) would auto-expand without the user clicking the
   // chevron — silently violating uncontrolled-collapse expectations.
-  useEffect(() => {
-    if (expandedTraceIds.size === 0) return;
+  //
+  // Compose liveTraceIds once per `sessions` reference and depend the
+  // prune effect on it alone. Listing expandedTraceIds in deps re-ran the
+  // full-forest walk on every chevron click — the exact bug fixed for
+  // expandedNodeIds in round-2 (codex P2 2026-05-31).
+  const liveTraceIds = useMemo(() => {
     const live = new Set<string>();
-    for (const s of sessions) for (const t of s.traces) live.add(t.id);
-    let stale = false;
-    for (const id of expandedTraceIds) {
-      if (!live.has(id)) {
-        stale = true;
-        break;
-      }
-    }
-    if (!stale) return;
+    forEachNode(sessions, (node) => {
+      for (const t of node.traces) live.add(t.id);
+    });
+    return live;
+  }, [sessions]);
+
+  useEffect(() => {
     setExpandedTraceIds((prev) => {
+      if (prev.size === 0) return prev;
+      let stale = false;
+      for (const id of prev) {
+        if (!liveTraceIds.has(id)) {
+          stale = true;
+          break;
+        }
+      }
+      if (!stale) return prev;
       const next = new Set<string>();
       for (const id of prev) {
-        if (live.has(id)) next.add(id);
+        if (liveTraceIds.has(id)) next.add(id);
       }
       return next;
     });
-  }, [sessions, expandedTraceIds]);
+  }, [liveTraceIds]);
+
+  // VOI-386: auto-expand any new root claude node on first appearance so
+  // operators see the nested tree without having to click. Idempotent —
+  // never re-adds a node the user has explicitly collapsed (the union
+  // with prev only adds NEW ids). Subagent + codex nodes stay collapsed
+  // by default; operator opts in.
+  useEffect(() => {
+    if (sessions.length === 0) return;
+    const seen = autoExpandedSeenRef.current;
+    const toAdd: string[] = [];
+    for (const root of sessions) {
+      if (root.kind === "claude" && !seen.has(root.id)) {
+        toAdd.push(root.id);
+        seen.add(root.id);
+      }
+    }
+    if (toAdd.length === 0) return;
+    setExpandedNodeIds((prev) => {
+      const next = new Set(prev);
+      for (const id of toAdd) next.add(id);
+      return next;
+    });
+  }, [sessions]);
+
+  // VOI-386: prune expandedNodeIds against ALL live node ids in the
+  // forest (not just visibleSessions — switching tabs shouldn't drop
+  // state for a node visible in History but hidden in Live).
+  // Compose the live-id set once per `sessions` reference and reuse it
+  // in BOTH the auto-expanded-seen prune (sessions-driven) and the
+  // expandedNodeIds-stale check (also sessions-driven). The earlier
+  // single-effect version listed expandedNodeIds in deps, so every
+  // chevron click forced a full-forest walk + Set rebuild even when
+  // sessions hadn't changed — wasted O(N) work on every interaction.
+  // Split per Claude /code-review round-2 P3 #1, 2026-05-31.
+  const liveNodeIds = useMemo(() => {
+    const live = new Set<string>();
+    forEachNode(sessions, (node) => live.add(node.id));
+    return live;
+  }, [sessions]);
+
+  // VOI-386 (codex P2 2026-05-31): do NOT prune autoExpandedSeenRef when
+  // an id leaves the live forest. A claude root can flap in/out of the
+  // polling window (CH window edge, churn, brief idle); if we pruned
+  // seen and the root resurfaced, the auto-expand effect would see it
+  // as "never seen" and re-expand it — silently undoing an explicit
+  // operator collapse. Block-comment invariant at line 247 promises
+  // exactly that this never happens. The Set is bounded by
+  // total-roots-ever-seen-in-this-session (a small, slowly-growing
+  // number), so leaking the membership of departed roots is cheap and
+  // preserves user intent across polling churn.
+
+  // Prune expandedNodeIds against live ids. Sessions-only dep — a chevron
+  // click can never make an id stale (it just toggles membership), so
+  // listing expandedNodeIds in deps would trigger needless full-forest
+  // walks on every interaction.
+  useEffect(() => {
+    setExpandedNodeIds((prev) => {
+      if (prev.size === 0) return prev;
+      let stale = false;
+      for (const id of prev) {
+        if (!liveNodeIds.has(id)) {
+          stale = true;
+          break;
+        }
+      }
+      if (!stale) return prev;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (liveNodeIds.has(id)) next.add(id);
+      }
+      return next;
+    });
+  }, [liveNodeIds]);
 
   const onSelectSession = useCallback(
     (id: string) => {
@@ -254,6 +364,14 @@ function Shell() {
       return next;
     });
   }, []);
+  const onToggleNode = useCallback((nodeId: string) => {
+    setExpandedNodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  }, []);
 
   const onTabChange = useCallback((next: TabKey) => {
     setTab(next);
@@ -266,8 +384,11 @@ function Shell() {
     }
   }, []);
 
-  const activeSession: SessionGroup | null = useMemo(
-    () => visibleSessions.find((s) => s.id === selectedSessionId) ?? null,
+  // VOI-386: tree-aware lookup so a selected subagent / codex child node
+  // resolves to the correct SessionNode (not null), and DetailsPane /
+  // Waterfall / middle-pane scope to THAT node's spans (not the root).
+  const activeSession: SessionNode | null = useMemo(
+    () => findNodeById(visibleSessions, selectedSessionId),
     [visibleSessions, selectedSessionId],
   );
   const activeTrace: TraceGroup | null = useMemo(
@@ -321,6 +442,8 @@ function Shell() {
               sessions={visibleSessions}
               selectedSessionId={selectedSessionId}
               onSelect={onSelectSession}
+              expandedNodeIds={expandedNodeIds}
+              onToggleExpand={onToggleNode}
               nowMs={nowMs}
               emptyMessage={sidebarEmpty}
               truncated={truncated}
@@ -390,6 +513,44 @@ interface SubtitleInputs {
   tab: TabKey;
   activeCount: number;
   totalCount: number;
+}
+
+// VOI-386: walk every node across the forest (root + nested children).
+// Used by App for the header counts and the prune effects so subagent +
+// codex children participate in the "// live · X of Y sessions active"
+// count.
+function forEachNode(
+  nodes: SessionNode[],
+  visit: (node: SessionNode) => void,
+): void {
+  const stack: SessionNode[] = [...nodes];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    visit(node);
+    for (const child of node.children) stack.push(child);
+  }
+}
+
+function countAllNodes(nodes: SessionNode[]): number {
+  let n = 0;
+  forEachNode(nodes, () => {
+    n += 1;
+  });
+  return n;
+}
+
+// VOI-386: counts only nodes whose own activityStatus is "active".
+// Used for the Live-tab header subtitle ("// live · X of Y sessions
+// active") and the tab counter so the totals match the row status dots
+// — filterActive retains inactive ancestors solely to expose active
+// descendants, and counting those ancestors as active would disagree
+// with what the operator sees in the sidebar (codex P2 2026-05-31).
+function countActiveNodes(nodes: SessionNode[], nowMs: number): number {
+  let n = 0;
+  forEachNode(nodes, (node) => {
+    if (activityStatus(node, nowMs) === "active") n += 1;
+  });
+  return n;
 }
 
 function buildSubtitle({ loading, error, tab, activeCount, totalCount }: SubtitleInputs): string {

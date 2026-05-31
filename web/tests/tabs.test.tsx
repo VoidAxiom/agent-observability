@@ -35,6 +35,13 @@ function session(id: string, lastActivity: number): SessionGroup {
     durationSeconds: 0,
     hasError: false,
     traces: [],
+    // VOI-386 tree fields — flat fixture, no nesting.
+    kind: "claude",
+    parentId: null,
+    children: [],
+    spans: [],
+    descendantSpanCount: 0,
+    descendantHasError: false,
   };
 }
 
