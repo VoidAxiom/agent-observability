@@ -14,6 +14,12 @@ interface ImportMetaEnv {
   readonly VITE_CH_DATABASE?: string;
   readonly VITE_CH_USERNAME?: string;
   readonly VITE_CH_PASSWORD?: string;
+  // Polling-query window + safety ceiling (VOI-382). Both positive
+  // integers; defaults are 1h window / 50000-row ceiling. Window bounds
+  // how far back the SessionSidebar's polling SELECT looks; ceiling caps
+  // the row count so a silent table can never load the entire history.
+  readonly VITE_CH_QUERY_WINDOW_HOURS?: string;
+  readonly VITE_CH_QUERY_LIMIT_CEILING?: string;
 }
 
 interface ImportMeta {

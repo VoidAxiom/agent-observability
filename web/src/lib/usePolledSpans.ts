@@ -28,6 +28,7 @@ import {
   fetchOnce,
   loadConfigFromEnv,
   type ClickHouseConfig,
+  type FetchResult,
 } from "./clickhouse";
 import { groupSpans, type SessionGroup, type SpanRow } from "./grouping";
 
@@ -36,12 +37,23 @@ export interface PolledSpansState {
   nowMs: number;
   error: string | null;
   loading: boolean;
+  /**
+   * True iff the most recent poll's row count hit the safety ceiling
+   * (VITE_CH_QUERY_LIMIT_CEILING — default 50k). The SessionSidebar shows
+   * a "// window truncated" chip when this is true so the operator knows
+   * the visible session list might be missing older sessions whose latest
+   * activity fell outside the visible-rows window. VOI-382.
+   */
+  truncated: boolean;
 }
 
 export interface UsePolledSpansOptions {
   intervalMs?: number;
   config?: ClickHouseConfig;
-  fetchImpl?: (config: ClickHouseConfig) => Promise<SpanRow[]>;
+  // Test-injectable fetch. Accepts either the legacy SpanRow[] shape (for
+  // existing test fixtures that pre-date VOI-382) or the new FetchResult
+  // shape. Production code path uses fetchOnce which returns FetchResult.
+  fetchImpl?: (config: ClickHouseConfig) => Promise<SpanRow[] | FetchResult>;
   nowFn?: () => number;
 }
 
@@ -76,7 +88,14 @@ export function usePolledSpans(
     nowMs: nowRef.current(),
     error: null,
     loading: true,
+    truncated: false,
   }));
+
+  // Dedupe console.warn for truncation so we warn ONCE per truncated-state
+  // transition (false → true). Without this, a 5s poll on a chronically-
+  // truncated table spams the console every 5 seconds. Refs scoped to the
+  // hook instance so two hook callers don't share state.
+  const lastTruncatedRef = useRef<boolean>(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -113,32 +132,56 @@ export function usePolledSpans(
       const gen = generationRef.current;
 
       let rows: SpanRow[];
+      let truncated = false;
       try {
         const cfg = resolveConfig();
         const impl = fetchRef.current;
-        rows = impl ? await impl(cfg) : await fetchOnce(cfg);
+        const result = impl ? await impl(cfg) : await fetchOnce(cfg);
+        // Normalize either shape (legacy SpanRow[] from older test fixtures
+        // OR FetchResult from production fetchOnce). Treat the legacy shape
+        // as not-truncated — only the new shape carries the flag.
+        if (Array.isArray(result)) {
+          rows = result;
+        } else {
+          rows = result.rows;
+          truncated = result.truncated;
+        }
       } catch (err) {
         if (cancelled || !mountedRef.current || gen <= lastCommittedGenRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
         lastCommittedGenRef.current = gen;
         setState((prev) => ({
           // Preserve last-good sessions across a failed poll so a transient
-          // CH blip doesn't blank the UI.
+          // CH blip doesn't blank the UI. Preserve truncated too — a
+          // transient error shouldn't flip the chip off.
           sessions: prev.sessions,
           nowMs: nowRef.current(),
           error: message,
           loading: false,
+          truncated: prev.truncated,
         }));
         return;
       }
       if (cancelled || !mountedRef.current || gen <= lastCommittedGenRef.current) return;
       lastCommittedGenRef.current = gen;
       const sessions = groupSpans(rows);
+      // Warn once per false→true transition (see lastTruncatedRef
+      // declaration above for rationale).
+      if (truncated && !lastTruncatedRef.current) {
+        console.warn(
+          `[usePolledSpans] ClickHouse result hit the row-count safety ceiling ` +
+            `(${rows.length} rows). Older spans within the configured time window ` +
+            `were dropped. Raise VITE_CH_QUERY_LIMIT_CEILING or shorten ` +
+            `VITE_CH_QUERY_WINDOW_HOURS.`,
+        );
+      }
+      lastTruncatedRef.current = truncated;
       setState({
         sessions,
         nowMs: nowRef.current(),
         error: null,
         loading: false,
+        truncated,
       });
     };
 

@@ -7,6 +7,7 @@ import {
   ClickHouseError,
   fetchOnce,
   loadConfigFromEnv,
+  loadQueryConfigFromEnv,
 } from "../src/lib/clickhouse";
 
 // Vitest gives each module its own `import.meta.env`, so mutating the
@@ -269,6 +270,61 @@ describe("buildRequestUrl", () => {
   });
 });
 
+describe("loadQueryConfigFromEnv", () => {
+  it("returns defaults when no env vars are set (1h window, 50k ceiling)", () => {
+    expect(loadQueryConfigFromEnv(envFrom({}))).toEqual({
+      windowHours: 1,
+      limitCeiling: 50_000,
+    });
+  });
+
+  it("reads VITE_CH_QUERY_WINDOW_HOURS and VITE_CH_QUERY_LIMIT_CEILING", () => {
+    const cfg = loadQueryConfigFromEnv(
+      envFrom({
+        VITE_CH_QUERY_WINDOW_HOURS: "6",
+        VITE_CH_QUERY_LIMIT_CEILING: "100000",
+      }),
+    );
+    expect(cfg).toEqual({ windowHours: 6, limitCeiling: 100_000 });
+  });
+
+  it("throws on a present-but-invalid window-hours (not silently defaulted)", () => {
+    // Regression discipline: the port loader throws on a present-but-
+    // invalid value rather than coercing to the default, because silent
+    // coercion of an env typo masks the failure. Same rule here — a
+    // typo like VITE_CH_QUERY_WINDOW_HOURS=1h would otherwise make
+    // the SPA query the wrong window and look like a polling bug.
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_WINDOW_HOURS: "1h" })),
+    ).toThrow(ClickHouseError);
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_WINDOW_HOURS: "0" })),
+    ).toThrow(ClickHouseError);
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_WINDOW_HOURS: "-1" })),
+    ).toThrow(ClickHouseError);
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_WINDOW_HOURS: "1.5" })),
+    ).toThrow(ClickHouseError);
+  });
+
+  it("throws on a present-but-invalid limit-ceiling", () => {
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_LIMIT_CEILING: "bogus" })),
+    ).toThrow(ClickHouseError);
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_LIMIT_CEILING: "0" })),
+    ).toThrow(ClickHouseError);
+  });
+
+  it("uses defaults when the env var is set to the empty string", () => {
+    expect(
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_WINDOW_HOURS: "" }))
+        .windowHours,
+    ).toBe(1);
+  });
+});
+
 describe("fetchOnce", () => {
   it("POSTs to the same-origin /ch path, not the absolute upstream URL", async () => {
     // Regression: an earlier impl POSTed directly to
@@ -299,6 +355,94 @@ describe("fetchOnce", () => {
     ];
     expect(calledUrl).toBe("/ch?database=default");
     expect(init.method).toBe("POST");
+  });
+
+  it("SELECT body carries a Timestamp> windowing predicate (VOI-382 regression guard)", async () => {
+    // Regression guard: before VOI-382, the SELECT was
+    // `ORDER BY Timestamp DESC LIMIT 1000` with no WHERE clause; at
+    // sustained 67 spans/sec ingest that covered only ~15s of history
+    // and sessions flapped in/out. This test fails if anyone removes
+    // the Timestamp> predicate or hardcodes the LIMIT back to 1000.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("[]", { status: 200 }),
+    );
+    await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 3, limitCeiling: 12345 },
+    );
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    const body = String(init.body);
+    expect(body).toMatch(/WHERE Timestamp > now\(\) - INTERVAL 3 HOUR/);
+    expect(body).toMatch(/LIMIT 12345/);
+    // Hard floor: the SELECT must not regress to a bare LIMIT 1000 with
+    // no WHERE clause.
+    expect(body).not.toMatch(/^[^W]*LIMIT 1000$/m);
+  });
+
+  it("returns truncated=true when row count meets the limit ceiling", async () => {
+    // Three rows; ceiling=3 → truncated. The flag drives the
+    // SessionSidebar's "// window truncated" chip; without it the operator
+    // has no signal that older sessions were silently dropped.
+    const fixtureRow = {
+      TraceId: "t",
+      SpanId: "s",
+      ParentSpanId: "",
+      SpanName: "x",
+      Timestamp: "2026-01-01T00:00:00",
+      ServiceName: "svc",
+      AgentProject: "p",
+      AgentSessionId: "as",
+      AgentRunId: "r",
+      SessionId: "sid",
+      ProjectName: "p",
+      ResourceAttributesRaw: {},
+      SpanAttributesRaw: {},
+      StatusCode: "",
+      Duration: 0,
+    };
+    const body = JSON.stringify([fixtureRow, fixtureRow, fixtureRow]);
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(body, { status: 200 }),
+    );
+    const result = await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 1, limitCeiling: 3 },
+    );
+    expect(result.rows.length).toBe(3);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("returns truncated=false when row count is below the ceiling", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("[]", { status: 200 }),
+    );
+    const result = await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 1, limitCeiling: 100 },
+    );
+    expect(result.rows).toEqual([]);
+    expect(result.truncated).toBe(false);
   });
 
   it("still validates host/port at the fetch boundary", async () => {

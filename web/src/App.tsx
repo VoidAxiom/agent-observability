@@ -39,7 +39,7 @@ function readTabFromHash(): TabKey {
 }
 
 function Shell() {
-  const { sessions, nowMs, error, loading } = usePolledSpans();
+  const { sessions, nowMs, error, loading, truncated } = usePolledSpans();
   const [tab, setTab] = useState<TabKey>(() => readTabFromHash());
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     null,
@@ -323,6 +323,7 @@ function Shell() {
               onSelect={onSelectSession}
               nowMs={nowMs}
               emptyMessage={sidebarEmpty}
+              truncated={truncated}
             />
           </div>
           <div style={paneContainerStyle}>

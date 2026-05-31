@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import { act, render, cleanup } from "@testing-library/react";
 import { useEffect } from "react";
 import { usePolledSpans } from "../src/lib/usePolledSpans";
+import type { FetchResult } from "../src/lib/clickhouse";
 import type { SpanRow } from "../src/lib/grouping";
 
 function row(spanId: string, sessionId: string): SpanRow {
@@ -35,7 +36,7 @@ function row(spanId: string, sessionId: string): SpanRow {
 
 interface ProbeProps {
   intervalMs: number;
-  fetchImpl: () => Promise<SpanRow[]>;
+  fetchImpl: () => Promise<SpanRow[] | FetchResult>;
   onState: (state: ReturnType<typeof usePolledSpans>) => void;
 }
 
@@ -258,6 +259,65 @@ describe("usePolledSpans", () => {
       expect(afterFresh.sessions.length).toBe(1);
       expect(afterFresh.sessions[0]!.sessionKey).toBe("fresh-epoch-session");
       expect(afterFresh.loading).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      cleanup();
+    }
+  });
+
+  it("propagates the truncated flag from FetchResult into state (VOI-382)", async () => {
+    // The fetchOnce contract returns { rows, truncated }; the hook must
+    // surface truncated on PolledSpansState so SessionSidebar can render
+    // its chip. Regression: an earlier version dropped the flag because
+    // groupSpans only takes rows, so truncated lived only on the local
+    // closure and never reached state.
+    vi.useFakeTimers();
+    try {
+      // Suppress the once-per-transition warn so the test output stays clean.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      let callIdx = 0;
+      const fetchImpl = vi.fn(async () => {
+        callIdx += 1;
+        if (callIdx === 1) {
+          return {
+            rows: [row("a", "session-a")],
+            truncated: true,
+          };
+        }
+        return {
+          rows: [row("b", "session-b")],
+          truncated: false,
+        };
+      });
+
+      let last: ReturnType<typeof usePolledSpans> | null = null;
+      render(
+        <Probe
+          intervalMs={50}
+          fetchImpl={fetchImpl}
+          onState={(s) => {
+            last = s;
+          }}
+        />,
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      const afterFirst = last as unknown as ReturnType<typeof usePolledSpans>;
+      expect(afterFirst.truncated).toBe(true);
+      // The false→true transition fires console.warn exactly once.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60);
+      });
+      const afterSecond = last as unknown as ReturnType<typeof usePolledSpans>;
+      expect(afterSecond.truncated).toBe(false);
+      // No new warn on the true→false transition (only false→true warns).
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      warnSpy.mockRestore();
     } finally {
       vi.useRealTimers();
       cleanup();

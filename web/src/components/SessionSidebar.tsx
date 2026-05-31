@@ -25,6 +25,13 @@ export interface SessionSidebarProps {
   onSelect: (sessionId: string) => void;
   nowMs: number;
   emptyMessage?: string;
+  /**
+   * When true, render a terminal-comment chip in the pane header signalling
+   * that the polling query hit its row-count safety ceiling and older
+   * spans-within-the-window were dropped. Surfaces VOI-382's truncation
+   * signal to the operator so they know to raise the ceiling.
+   */
+  truncated?: boolean;
 }
 
 interface ServiceBucket {
@@ -75,6 +82,7 @@ export function SessionSidebar({
   onSelect,
   nowMs,
   emptyMessage,
+  truncated = false,
 }: SessionSidebarProps) {
   const buckets = useMemo(() => bucketByService(sessions), [sessions]);
 
@@ -99,6 +107,16 @@ export function SessionSidebar({
         </h2>
         <span style={paneHeaderHintStyle}>{`// ${sessions.length}`}</span>
       </header>
+      {truncated ? (
+        <p
+          role="status"
+          data-truncation-chip="true"
+          style={truncationChipStyle}
+          title="ClickHouse returned the maximum row count; older spans within the configured time window were dropped. Raise VITE_CH_QUERY_LIMIT_CEILING or shorten VITE_CH_QUERY_WINDOW_HOURS."
+        >
+          {"// window truncated · raise VITE_CH_QUERY_LIMIT_CEILING"}
+        </p>
+      ) : null}
       {buckets.map((bucket) => (
         <section key={bucket.serviceName} style={bucketStyle}>
           <h3 style={bucketHeaderStyle}>{bucket.serviceName}</h3>
@@ -293,6 +311,19 @@ const paneHeaderHintStyle: CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: "11px",
   color: "var(--text-muted)",
+};
+
+const truncationChipStyle: CSSProperties = {
+  margin: "2px 4px 0",
+  padding: "4px 8px",
+  fontFamily: "var(--font-mono)",
+  fontSize: "10px",
+  color: "var(--accent-2)",
+  background: "var(--surface-raised)",
+  border: "1px solid var(--accent-2)",
+  borderRadius: "var(--radius-card)",
+  letterSpacing: "0.02em",
+  cursor: "help",
 };
 
 const bucketStyle: CSSProperties = {

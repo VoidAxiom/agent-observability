@@ -7,7 +7,17 @@
 
 import type { SpanRow } from "./grouping";
 
-const SELECT = `SELECT
+// SELECT shape matches VOI-335's Swift ClickHouseQueryService (12-column
+// payload with raw attribute maps). The shape is templated on a
+// time-window predicate + a safety ceiling, both driven by
+// ClickHouseQueryConfig (VOI-382): the prior unbounded
+// `ORDER BY Timestamp DESC LIMIT 1000` covered only ~15s of history at
+// sustained 67 spans/sec ingest, so any session that hadn't emitted in
+// that window vanished and reappeared on alternating polls — flicker.
+// Windowed query keeps a 1h scrollback by default; the ceiling is a
+// safety cap so a quiet table can never load the entire history.
+function buildSelect(windowHours: number, limitCeiling: number): string {
+  return `SELECT
   TraceId, SpanId, ParentSpanId, SpanName, Timestamp, ServiceName,
   ResourceAttributes['agent.project']    AS AgentProject,
   ResourceAttributes['agent.session.id'] AS AgentSessionId,
@@ -19,9 +29,11 @@ const SELECT = `SELECT
   StatusCode,
   Duration
 FROM otel_traces
+WHERE Timestamp > now() - INTERVAL ${windowHours} HOUR
 ORDER BY Timestamp DESC
-LIMIT 1000
+LIMIT ${limitCeiling}
 FORMAT JSONEachRow`;
+}
 
 export interface ClickHouseConfig {
   host: string;
@@ -30,6 +42,23 @@ export interface ClickHouseConfig {
   username: string;
   password: string;
 }
+
+/**
+ * Query-shape config — distinct from connection config (ClickHouseConfig)
+ * so the loader can change query semantics (window, ceiling) without
+ * touching connection plumbing. windowHours bounds how far back the
+ * polling SELECT looks; limitCeiling is a safety cap on row count so a
+ * silent table can never load the entire history. See VOI-382: prior
+ * `LIMIT 1000` covered only ~15s at 67 spans/sec ingest, causing
+ * sessions to flap.
+ */
+export interface ClickHouseQueryConfig {
+  windowHours: number;
+  limitCeiling: number;
+}
+
+const DEFAULT_WINDOW_HOURS = 1;
+const DEFAULT_LIMIT_CEILING = 50_000;
 
 // Hostname grammar accepted by buildEndpointUrl. Conservative: DNS labels +
 // IPv4 + bracketed IPv6. Rejects userinfo (`@`), path (`/`), query (`?`),
@@ -78,6 +107,49 @@ export function loadConfigFromEnv(
     username: env.CH_USERNAME ?? env.VITE_CH_USERNAME ?? "default",
     password: env.CH_PASSWORD ?? env.VITE_CH_PASSWORD ?? "",
   };
+}
+
+/**
+ * Read query-shape overrides from env. Both knobs (window + ceiling) are
+ * positive-integer-only; an explicitly-set-but-invalid value throws (same
+ * fail-loud discipline as the port loader) rather than silently coercing
+ * to the default — a typo like `VITE_CH_QUERY_WINDOW_HOURS=1h` would
+ * otherwise make the SPA query the wrong window and the failure would look
+ * like a polling bug.
+ */
+export function loadQueryConfigFromEnv(
+  env: ImportMetaEnv = (import.meta as ImportMeta).env ?? ({} as ImportMetaEnv),
+): ClickHouseQueryConfig {
+  return {
+    windowHours: parsePositiveIntEnv(
+      env.VITE_CH_QUERY_WINDOW_HOURS,
+      DEFAULT_WINDOW_HOURS,
+      "VITE_CH_QUERY_WINDOW_HOURS",
+    ),
+    limitCeiling: parsePositiveIntEnv(
+      env.VITE_CH_QUERY_LIMIT_CEILING,
+      DEFAULT_LIMIT_CEILING,
+      "VITE_CH_QUERY_LIMIT_CEILING",
+    ),
+  };
+}
+
+function parsePositiveIntEnv(
+  raw: string | undefined,
+  fallback: number,
+  name: string,
+): number {
+  if (raw === undefined || raw === "") return fallback;
+  // Use Number() not parseInt() so trailing garbage ("1h") returns NaN
+  // instead of silently parsing as 1. Matches the port loader's discipline.
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    throw new ClickHouseError(
+      `Invalid ${name} ${JSON.stringify(raw)}: must be a positive integer`,
+      0,
+    );
+  }
+  return n;
 }
 
 // True assertion: returns void, throws ClickHouseError on a host/port
@@ -167,22 +239,36 @@ export function buildRequestUrl(config: ClickHouseConfig): string {
   return `/ch?${params.toString()}`;
 }
 
+export interface FetchResult {
+  rows: SpanRow[];
+  /**
+   * True iff ClickHouse returned exactly limitCeiling rows. Indicates the
+   * window-query hit its safety cap and earlier spans were silently dropped
+   * — the SessionSidebar surfaces this as a "// window truncated" chip so
+   * the operator knows to raise VITE_CH_QUERY_LIMIT_CEILING (or shorten
+   * VITE_CH_QUERY_WINDOW_HOURS).
+   */
+  truncated: boolean;
+}
+
 export async function fetchOnce(
   config: ClickHouseConfig = loadConfigFromEnv(),
   fetchImpl: typeof fetch = fetch,
-): Promise<SpanRow[]> {
+  queryConfig: ClickHouseQueryConfig = loadQueryConfigFromEnv(),
+): Promise<FetchResult> {
   // Validate host/port up front so a misconfigured CH_HOST surfaces a
   // ClickHouseError at the same boundary it did before the proxy switch,
   // even though the actual fetch goes to the same-origin /ch path.
   assertConfigValid(config);
   const endpoint = buildRequestUrl(config);
+  const body = buildSelect(queryConfig.windowHours, queryConfig.limitCeiling);
   const response = await fetchImpl(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "text/plain; charset=UTF-8",
       Authorization: authorizationHeader(config),
     },
-    body: SELECT,
+    body,
   });
   if (!response.ok) {
     throw new ClickHouseError(
@@ -191,7 +277,8 @@ export async function fetchOnce(
     );
   }
   const text = await response.text();
-  return decodeRows(text);
+  const rows = decodeRows(text);
+  return { rows, truncated: rows.length >= queryConfig.limitCeiling };
 }
 
 export class ClickHouseError extends Error {
