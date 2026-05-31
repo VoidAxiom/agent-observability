@@ -64,7 +64,7 @@ should_stamp_codex_exec() {
     fi
 
     case "$arg" in
-      -c|--config)
+      -c|--config|-p|--profile|-m|--model)
         skip_next=1
         continue
         ;;

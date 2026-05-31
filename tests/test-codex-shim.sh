@@ -217,6 +217,61 @@ else
   fail_case 'case7d exec help' "unexpected exit; stderr=$(<"$stderr")"
 fi
 
+# 7e. Subcommand detection: -p value before exec stamps.
+tmp="$(new_case_dir)"
+make_fake_codex "$tmp/realbin"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" -p production exec hello; then
+  assert_matches 'case7e -p before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+else
+  fail_case 'case7e -p before exec' "unexpected exit; stderr=$(<"$stderr")"
+fi
+
+# 7f. Subcommand detection: --profile value before exec stamps.
+tmp="$(new_case_dir)"
+make_fake_codex "$tmp/realbin"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" --profile production exec hello; then
+  assert_matches 'case7f --profile before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+else
+  fail_case 'case7f --profile before exec' "unexpected exit; stderr=$(<"$stderr")"
+fi
+
+# 7g. Subcommand detection: -m value before exec stamps.
+tmp="$(new_case_dir)"
+make_fake_codex "$tmp/realbin"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" -m gpt-5.4 exec hello; then
+  assert_matches 'case7g -m before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+else
+  fail_case 'case7g -m before exec' "unexpected exit; stderr=$(<"$stderr")"
+fi
+
+# 7h. Subcommand detection: --model value before exec stamps.
+tmp="$(new_case_dir)"
+make_fake_codex "$tmp/realbin"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" --model gpt-5.4 exec hello; then
+  assert_matches 'case7h --model before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+else
+  fail_case 'case7h --model before exec' "unexpected exit; stderr=$(<"$stderr")"
+fi
+
+# 7i. Subcommand detection: chained value-bearing flags before exec stamp.
+tmp="$(new_case_dir)"
+make_fake_codex "$tmp/realbin"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" -p production -m gpt-5.4 exec hello; then
+  assert_matches 'case7i profile and model before exec stamp' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+else
+  fail_case 'case7i profile and model before exec' "unexpected exit; stderr=$(<"$stderr")"
+fi
+
 # 8. Diagnostics.
 tmp="$(new_case_dir)"
 make_fake_codex "$tmp/realbin"
