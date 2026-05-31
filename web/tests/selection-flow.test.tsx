@@ -337,6 +337,90 @@ describe("App selection flow", () => {
     ).toBe(0);
   });
 
+  it("selecting a subagent node scopes the middle pane to ONLY that subagent's spans (VOI-386)", () => {
+    // Build a claude session with one dispatched subagent. The subagent
+    // owns 2 spans (sub-w-1, sub-w-2); the claude root owns the other 2.
+    // Selecting the subagent in the sidebar should narrow the trace pane
+    // to only the spans owned by the subagent — not the parent's spans.
+    const rows: SpanRow[] = [
+      span({
+        SessionId: "sess-T",
+        TraceId: "claude-trace",
+        SpanId: "root",
+        SpanName: "claude_code.tool.bash",
+        Timestamp: "2026-01-01T00:01:01.000000000",
+      }),
+      span({
+        SessionId: "sess-T",
+        TraceId: "claude-trace",
+        SpanId: "dispatch",
+        ParentSpanId: "root",
+        SpanName: "claude_code.tool.task",
+        Timestamp: "2026-01-01T00:01:02.000000000",
+        SpanAttributesRaw: { subagent_type: "ui-implementer" },
+      }),
+      span({
+        SessionId: "sess-T",
+        TraceId: "claude-trace",
+        SpanId: "sub-w-1",
+        ParentSpanId: "dispatch",
+        SpanName: "claude_code.tool.edit",
+        Timestamp: "2026-01-01T00:01:03.000000000",
+        SpanAttributesRaw: { agent_id: "sub-agent-T" },
+      }),
+      span({
+        SessionId: "sess-T",
+        TraceId: "claude-trace",
+        SpanId: "sub-w-2",
+        ParentSpanId: "sub-w-1",
+        SpanName: "claude_code.tool.write",
+        Timestamp: "2026-01-01T00:01:04.000000000",
+        SpanAttributesRaw: { agent_id: "sub-agent-T" },
+      }),
+    ];
+    setMock(rows);
+    render(<App />);
+    // The subagent node id is `sess-T::subagent::sub-agent-T` per
+    // grouping.ts. Click it.
+    const subagentId = "sess-T::subagent::sub-agent-T";
+    const subagentRow = document.querySelector(
+      `[data-session-id="${subagentId}"]`,
+    ) as HTMLButtonElement | null;
+    expect(subagentRow).not.toBeNull();
+    fireEvent.click(subagentRow!);
+
+    // The selected session is the subagent.
+    expect(
+      document
+        .querySelector('[data-session-id][data-selected="true"]')
+        ?.getAttribute("data-session-id"),
+    ).toBe(subagentId);
+
+    // The middle pane (CollapsibleTraceList) shows only the trace from
+    // the subagent's owned spans. Auto-promotion picks the first trace
+    // but does NOT expand it, so the span rows aren't rendered until the
+    // user clicks the chevron. Expand the auto-promoted trace and assert
+    // its span list contains the subagent's spans and excludes the
+    // claude-owned root + dispatch.
+    const chevron = document.querySelector(
+      '[data-testid^="voi-chevron-"]',
+    ) as HTMLButtonElement | null;
+    expect(chevron).not.toBeNull();
+    fireEvent.click(chevron!);
+
+    const traceSpanList = document.querySelector(
+      '[data-testid^="voi-spans-"]',
+    );
+    expect(traceSpanList).not.toBeNull();
+    const visibleSpanIds = Array.from(
+      traceSpanList!.querySelectorAll("[data-span-id]"),
+    ).map((el) => el.getAttribute("data-span-id"));
+    expect(visibleSpanIds).toContain("claude-tracesub-w-1");
+    expect(visibleSpanIds).toContain("claude-tracesub-w-2");
+    expect(visibleSpanIds).not.toContain("claude-traceroot");
+    expect(visibleSpanIds).not.toContain("claude-tracedispatch");
+  });
+
   it("removing the selected session promotes the next-best deterministically", () => {
     setMock(fixtureRows());
     const { rerender } = render(<App />);

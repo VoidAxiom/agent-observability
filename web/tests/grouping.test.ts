@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   computeTreeOrder,
+  findNodeById,
   groupSpans,
+  groupSpansToTree,
   parseTimestamp,
   reconcileSelection,
+  type SessionNode,
   type SpanRow,
 } from "../src/lib/grouping";
 
@@ -412,3 +415,424 @@ describe("parseTimestamp", () => {
     expect(parseTimestamp("2026-01-01T00:00:00.500x")).toBeNull();
   });
 });
+
+// ---------- VOI-386 tree builder ----------
+//
+// Helpers below construct hand-rolled fixtures for the
+// claude → subagent → codex hierarchy. The flow under test:
+//   1. claude root  = bucket of ServiceName="claude-code" spans by
+//                     SpanAttributes['session.id'].
+//   2. subagent     = bucket of those spans by SpanAttributes['agent_id']
+//                     IF that agent_id was the first descendant of a
+//                     dispatch span (SpanAttributes['subagent_type']).
+//   3. codex node   = bucket of ServiceName="codex_exec" spans by
+//                     ResourceAttributes['agent.session.id'], parent
+//                     resolved via two-tier fallback (parent.span.id walk
+//                     → parent.session.id → null).
+
+interface ClaudeSpanOverrides {
+  sessionId: string;
+  spanId: string;
+  parentSpanId?: string;
+  timestamp?: string;
+  agentId?: string;
+  subagentType?: string;
+  spanName?: string;
+}
+
+function claudeSpan(o: ClaudeSpanOverrides): SpanRow {
+  return span({
+    traceId: `claude-trace-${o.sessionId}`,
+    spanId: o.spanId,
+    parentSpanId: o.parentSpanId ?? "",
+    spanName: o.spanName ?? "claude_code.tool.bash",
+    timestamp: o.timestamp ?? "2026-01-01T00:00:01.000000000",
+    serviceName: "claude-code",
+    sessionId: o.sessionId,
+    spanAttributesRaw: {
+      ...(o.agentId ? { agent_id: o.agentId } : {}),
+      ...(o.subagentType ? { subagent_type: o.subagentType } : {}),
+    },
+  });
+}
+
+interface CodexSpanOverrides {
+  codexSessionId: string;
+  spanId: string;
+  parentSpanId?: string;
+  timestamp?: string;
+  parentSpanIdStamp?: string;
+  parentSessionIdStamp?: string;
+  spanName?: string;
+}
+
+function codexSpan(o: CodexSpanOverrides): SpanRow {
+  const resAttrs: Record<string, string> = {
+    "agent.session.id": o.codexSessionId,
+    "agent.kind": "codex_exec",
+  };
+  if (o.parentSpanIdStamp) {
+    resAttrs["agent.parent.span.id"] = o.parentSpanIdStamp;
+  }
+  if (o.parentSessionIdStamp) {
+    resAttrs["agent.parent.session.id"] = o.parentSessionIdStamp;
+  }
+  return span({
+    traceId: `codex-trace-${o.codexSessionId}-${o.spanId}`,
+    spanId: o.spanId,
+    parentSpanId: o.parentSpanId ?? "",
+    spanName: o.spanName ?? "codex_exec.invoke",
+    timestamp: o.timestamp ?? "2026-01-01T00:00:02.000000000",
+    serviceName: "codex_exec",
+    sessionId: "",
+    agentSessionId: o.codexSessionId,
+    resourceAttributesRaw: resAttrs,
+  });
+}
+
+function findRootBySession(
+  forest: SessionNode[],
+  sessionId: string,
+): SessionNode {
+  const node = forest.find((n) => n.id === sessionId);
+  if (!node) throw new Error(`no root for session ${sessionId}`);
+  return node;
+}
+
+describe("groupSpansToTree (VOI-386)", () => {
+  it("single claude session, no subagents → one root, zero children, owns all spans", () => {
+    const forest = groupSpansToTree([
+      claudeSpan({
+        sessionId: "sess-A",
+        spanId: "s1",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-A",
+        spanId: "s2",
+        parentSpanId: "s1",
+        timestamp: "2026-01-01T00:00:02.000000000",
+      }),
+    ]);
+    expect(forest.length).toBe(1);
+    const root = forest[0]!;
+    expect(root.kind).toBe("claude");
+    expect(root.parentId).toBeNull();
+    expect(root.children.length).toBe(0);
+    expect(root.spans.length).toBe(2);
+    expect(root.spanCount).toBe(2);
+  });
+
+  it("claude session with one subagent → child kind=subagent, label = subagent_type, span ownership split", () => {
+    const forest = groupSpansToTree([
+      // Root claude work span (no agent_id → claude owns it).
+      claudeSpan({
+        sessionId: "sess-B",
+        spanId: "root",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      // Dispatch span: carries subagent_type.
+      claudeSpan({
+        sessionId: "sess-B",
+        spanId: "dispatch",
+        parentSpanId: "root",
+        timestamp: "2026-01-01T00:00:02.000000000",
+        subagentType: "ui-implementer",
+      }),
+      // Subagent's first work span (agent_id="sub-1") — tree descendant
+      // of dispatch span. dispatch span tree-walk picks this agent_id up.
+      claudeSpan({
+        sessionId: "sess-B",
+        spanId: "sub-first",
+        parentSpanId: "dispatch",
+        timestamp: "2026-01-01T00:00:03.000000000",
+        agentId: "sub-1",
+      }),
+      claudeSpan({
+        sessionId: "sess-B",
+        spanId: "sub-second",
+        parentSpanId: "sub-first",
+        timestamp: "2026-01-01T00:00:04.000000000",
+        agentId: "sub-1",
+      }),
+    ]);
+    expect(forest.length).toBe(1);
+    const root = forest[0]!;
+    expect(root.kind).toBe("claude");
+    expect(root.children.length).toBe(1);
+    const subagent = root.children[0]!;
+    expect(subagent.kind).toBe("subagent");
+    expect(subagent.parentId).toBe(root.id);
+    expect(subagent.displayLabel).toBe("ui-implementer");
+    // Span ownership: subagent gets its two work spans; root keeps the
+    // non-agent-id spans (root + dispatch).
+    expect(subagent.spans.map((s) => s.SpanId).sort()).toEqual([
+      "sub-first",
+      "sub-second",
+    ]);
+    expect(root.spans.map((s) => s.SpanId).sort()).toEqual([
+      "dispatch",
+      "root",
+    ]);
+  });
+
+  it("subagent-launched codex → claude → subagent → codex (3 levels deep)", () => {
+    const forest = groupSpansToTree([
+      claudeSpan({
+        sessionId: "sess-C",
+        spanId: "root",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-C",
+        spanId: "dispatch",
+        parentSpanId: "root",
+        timestamp: "2026-01-01T00:00:02.000000000",
+        subagentType: "implementer",
+      }),
+      // Subagent work span — parent of the eventual codex stamp anchor.
+      claudeSpan({
+        sessionId: "sess-C",
+        spanId: "sub-work",
+        parentSpanId: "dispatch",
+        timestamp: "2026-01-01T00:00:03.000000000",
+        agentId: "sub-2",
+      }),
+      // Codex spans: stamped with agent.parent.span.id pointing at the
+      // subagent's work span. The resolver should walk that span's
+      // ancestry → land on agent_id=sub-2 → nest under that subagent.
+      codexSpan({
+        codexSessionId: "codex-X",
+        spanId: "cx-1",
+        parentSpanIdStamp: "sub-work",
+        parentSessionIdStamp: "sess-C",
+        timestamp: "2026-01-01T00:00:04.000000000",
+      }),
+    ]);
+    expect(forest.length).toBe(1);
+    const root = findRootBySession(forest, "sess-C");
+    expect(root.children.length).toBe(1);
+    const subagent = root.children[0]!;
+    expect(subagent.kind).toBe("subagent");
+    expect(subagent.children.length).toBe(1);
+    const codex = subagent.children[0]!;
+    expect(codex.kind).toBe("codex");
+    expect(codex.parentId).toBe(subagent.id);
+    expect(codex.sessionKey).toBe("codex-X");
+  });
+
+  it("main-agent-launched codex → claude → codex (no subagent intervening)", () => {
+    const forest = groupSpansToTree([
+      claudeSpan({
+        sessionId: "sess-D",
+        spanId: "root",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      // No dispatch span — main agent calls codex directly. The codex
+      // stamp's parent.span.id walk finds no agent_id ancestor (root
+      // claude span has none); falls through to parent.session.id which
+      // matches sess-D.
+      codexSpan({
+        codexSessionId: "codex-Y",
+        spanId: "cy-1",
+        parentSpanIdStamp: "root",
+        parentSessionIdStamp: "sess-D",
+        timestamp: "2026-01-01T00:00:02.000000000",
+      }),
+    ]);
+    const root = findRootBySession(forest, "sess-D");
+    expect(root.children.length).toBe(1);
+    const codex = root.children[0]!;
+    expect(codex.kind).toBe("codex");
+    expect(codex.parentId).toBe(root.id);
+  });
+
+  it("standalone codex (no parent session id) → top-level codex root", () => {
+    const forest = groupSpansToTree([
+      codexSpan({
+        codexSessionId: "codex-Z",
+        spanId: "cz-1",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+    ]);
+    expect(forest.length).toBe(1);
+    const codex = forest[0]!;
+    expect(codex.kind).toBe("codex");
+    expect(codex.parentId).toBeNull();
+  });
+
+  it("codex with parent.session.id but claude session not in window → top-level codex with orphan-parent label", () => {
+    const forest = groupSpansToTree([
+      codexSpan({
+        codexSessionId: "codex-W",
+        spanId: "cw-1",
+        parentSessionIdStamp: "missing-claude-session",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+    ]);
+    const codex = forest.find((n) => n.sessionKey === "codex-W");
+    expect(codex).not.toBeUndefined();
+    expect(codex!.parentId).toBeNull();
+    expect(codex!.displayLabel).toMatch(/orphan parent/);
+  });
+
+  it("multiple codex execs under the same subagent → distinct codex nodes keyed by agent.session.id", () => {
+    const forest = groupSpansToTree([
+      claudeSpan({
+        sessionId: "sess-E",
+        spanId: "root",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-E",
+        spanId: "dispatch",
+        parentSpanId: "root",
+        timestamp: "2026-01-01T00:00:02.000000000",
+        subagentType: "implementer",
+      }),
+      claudeSpan({
+        sessionId: "sess-E",
+        spanId: "sub-anchor",
+        parentSpanId: "dispatch",
+        timestamp: "2026-01-01T00:00:03.000000000",
+        agentId: "sub-E",
+      }),
+      codexSpan({
+        codexSessionId: "codex-E1",
+        spanId: "ce1-1",
+        parentSpanIdStamp: "sub-anchor",
+        parentSessionIdStamp: "sess-E",
+        timestamp: "2026-01-01T00:00:04.000000000",
+      }),
+      codexSpan({
+        codexSessionId: "codex-E2",
+        spanId: "ce2-1",
+        parentSpanIdStamp: "sub-anchor",
+        parentSessionIdStamp: "sess-E",
+        timestamp: "2026-01-01T00:00:05.000000000",
+      }),
+    ]);
+    const root = findRootBySession(forest, "sess-E");
+    const subagent = root.children[0]!;
+    expect(subagent.children.length).toBe(2);
+    const codexKeys = subagent.children
+      .map((c) => c.sessionKey)
+      .sort();
+    expect(codexKeys).toEqual(["codex-E1", "codex-E2"]);
+    for (const codex of subagent.children) {
+      expect(codex.kind).toBe("codex");
+    }
+  });
+
+  it("un-stamped historical codex (no agent.session.id) does NOT promote to tree codex node", () => {
+    // Spec § "stamped-data-only": codex spans without the explicit stamp
+    // remain in the legacy bucket — they fall through to the effective-
+    // session-key path and surface as a flat node, not a tree codex node.
+    const forest = groupSpansToTree([
+      span({
+        traceId: "legacy-trace",
+        spanId: "legacy-span",
+        timestamp: "2026-01-01T00:00:01.000000000",
+        serviceName: "codex_exec",
+        sessionId: "",
+        agentSessionId: "",
+      }),
+    ]);
+    // No tree codex node — the row collapses to legacy effective-key
+    // bucketing (TraceId fallback). The node exists, but its sessionKey
+    // is not "anything" — what matters is no claude→codex tree structure
+    // emerged (no claude parent, no stamped codex node).
+    expect(forest.length).toBe(1);
+    const onlyNode = forest[0]!;
+    expect(onlyNode.children.length).toBe(0);
+    // Effective key fell through to TraceId.
+    expect(onlyNode.sessionKey).toBe("legacy-trace");
+  });
+
+  it("siblings at every level sort by lastActivity desc", () => {
+    const forest = groupSpansToTree([
+      // sess-OLD ends at :01.
+      claudeSpan({
+        sessionId: "sess-OLD",
+        spanId: "old-root",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      // sess-NEW ends at :05 — should sort FIRST in the forest.
+      claudeSpan({
+        sessionId: "sess-NEW",
+        spanId: "new-root",
+        timestamp: "2026-01-01T00:00:05.000000000",
+      }),
+    ]);
+    expect(forest.map((n) => n.sessionKey)).toEqual([
+      "sess-NEW",
+      "sess-OLD",
+    ]);
+  });
+
+  it("findNodeById finds deeply nested nodes; null for missing; cycle-safe", () => {
+    const forest = groupSpansToTree([
+      claudeSpan({
+        sessionId: "sess-F",
+        spanId: "root",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-F",
+        spanId: "dispatch",
+        parentSpanId: "root",
+        timestamp: "2026-01-01T00:00:02.000000000",
+        subagentType: "ui-implementer",
+      }),
+      claudeSpan({
+        sessionId: "sess-F",
+        spanId: "sub-anchor",
+        parentSpanId: "dispatch",
+        timestamp: "2026-01-01T00:00:03.000000000",
+        agentId: "sub-F",
+      }),
+      codexSpan({
+        codexSessionId: "codex-F",
+        spanId: "cf-1",
+        parentSpanIdStamp: "sub-anchor",
+        parentSessionIdStamp: "sess-F",
+        timestamp: "2026-01-01T00:00:04.000000000",
+      }),
+    ]);
+    const subagent = forest[0]!.children[0]!;
+    const codex = subagent.children[0]!;
+    expect(findNodeById(forest, codex.id)?.sessionKey).toBe("codex-F");
+    expect(findNodeById(forest, subagent.id)?.kind).toBe("subagent");
+    expect(findNodeById(forest, "absent")).toBeNull();
+    expect(findNodeById(forest, null)).toBeNull();
+    // Cycle-safety check: build a hand-rolled cyclic forest. The visited
+    // set in findNodeById should bound the walk regardless.
+    const cycleA: SessionNode = {
+      ...forest[0]!,
+      id: "cyc-A",
+      children: [],
+    };
+    const cycleB: SessionNode = {
+      ...forest[0]!,
+      id: "cyc-B",
+      children: [cycleA],
+    };
+    cycleA.children = [cycleB];
+    expect(findNodeById([cycleA], "cyc-B")?.id).toBe("cyc-B");
+    expect(findNodeById([cycleA], "nope")).toBeNull();
+  });
+
+  it("groupSpans alias matches groupSpansToTree output", () => {
+    const rows = [
+      claudeSpan({
+        sessionId: "sess-alias",
+        spanId: "s1",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+    ];
+    expect(groupSpans(rows).map((n) => n.id)).toEqual(
+      groupSpansToTree(rows).map((n) => n.id),
+    );
+  });
+});
+

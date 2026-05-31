@@ -78,6 +78,14 @@ function session(over: Partial<SessionGroup> & { id: string }): SessionGroup {
     durationSeconds: over.durationSeconds ?? 0,
     hasError: over.hasError ?? false,
     traces: over.traces ?? [],
+    // VOI-386 tree fields — fixtures default to a flat root claude node
+    // with no children; tests that need nesting build explicit children.
+    kind: over.kind ?? "claude",
+    parentId: over.parentId ?? null,
+    children: over.children ?? [],
+    spans: over.spans ?? [],
+    descendantSpanCount: over.descendantSpanCount ?? 0,
+    descendantHasError: over.descendantHasError ?? false,
   };
 }
 

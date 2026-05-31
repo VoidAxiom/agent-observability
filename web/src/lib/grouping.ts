@@ -1,21 +1,37 @@
 /*
- * grouping.ts — TypeScript port of app/Sources/AgentObservability/SessionGrouping.swift.
+ * grouping.ts — session grouping + tree assembly.
  *
- * Behaviour invariants (preserved from Swift):
- *  - Session key fallback: SpanAttributes['session.id'] (SessionId) >
- *    ResourceAttributes['agent.session.id'] (AgentSessionId) > TraceId.
- *    (VOI-339 r2 spec-corrected order — operator ratified.)
- *  - lastActivity uses span END time (Timestamp + Duration_ns), not start
- *    (VOI-335 r17 fix).
- *  - traceDurationSeconds = (max span end-time) - (min span start-time);
- *    handles single-span and long-child-starting-before-last-child cases
- *    (VOI-335 r12/r13 fix).
- *  - computeTreeOrder is cycle-safe via per-(TraceId, SpanId) visited set;
- *    sibling order is by Timestamp ascending with insertion-order tie-break.
- *    Bookkeeping is scoped by TraceId so colliding SpanIds across traces
- *    don't cross-talk.
- *  - hasError checks StatusCode + merged span/resource attributes for
- *    otel.status_code=ERROR, error=true, or any "exception.*" key.
+ * VOI-386 extends the flat SessionGroup[] into a SessionNode forest:
+ * claude → subagent → codex. SessionNode is a SUPERSET of the original
+ * SessionGroup shape (all SessionGroup fields preserved), plus tree fields
+ * (kind, parentId, children, descendantSpanCount, descendantHasError).
+ * `SessionGroup` stays exported as a type alias so existing consumers
+ * (DetailsPane, sessionsFilter, App.tsx) keep compiling unchanged.
+ *
+ * Build algorithm (per docs/session-hierarchy-design.md § "Layer 1 — UI",
+ * authoritative; see .codex-runs/voi-386-r1/spec.md for the verbatim quote):
+ *   1. claude nodes  — bucket ServiceName=claude-code spans by SessionId
+ *      (SpanAttributes['session.id']). Roots of each tree.
+ *   2. subagent nodes — within each claude bucket, find dispatch spans
+ *      (SpanAttributes['subagent_type'] non-empty); the subagent's
+ *      agent_id is the first descendant span's agent_id. Promote work
+ *      spans bearing those agent_ids to subagent nodes. Other agent_id
+ *      spans (root Claude agent) stay on the claude node.
+ *   3. codex nodes   — bucket ServiceName=codex_exec spans by stamped
+ *      ResourceAttributes['agent.session.id']. Resolve parent via two-tier
+ *      fallback: (a) parent.span.id → walk up to nearest agent_id ancestor
+ *      that's in the dispatch map; (b) parent.session.id → that claude
+ *      node; (c) else top-level. Un-stamped codex (no agent.session.id)
+ *      remains on its inherited claude bucket per stamped-data-only rule.
+ *
+ * Original SessionGroup invariants preserved:
+ *   - Session key fallback for legacy / un-stamped paths:
+ *     SpanAttributes['session.id'] > ResourceAttributes['agent.session.id'] > TraceId.
+ *   - lastActivity uses span END time (Timestamp + Duration_ns).
+ *   - durationSeconds = (max end-time) - (min start-time).
+ *   - computeTreeOrder is cycle-safe (per-(TraceId, SpanId) visited set);
+ *     sibling order by Timestamp ascending with insertion-order tie-break.
+ *   - hasError checks StatusCode + merged span/resource attributes.
  */
 
 export interface SpanRow {
@@ -51,8 +67,23 @@ export interface TraceGroup {
   spans: SpanRow[];
 }
 
-export interface SessionGroup {
-  id: string; // === sessionKey
+export type SessionKind = "claude" | "subagent" | "codex";
+
+/**
+ * SessionNode — the unified tree-aware session shape. Superset of the
+ * historical SessionGroup so DetailsPane, sessionsFilter, and selection
+ * reconciliation keep working unchanged (every SessionGroup field is
+ * carried; new tree fields are additive).
+ *
+ * `spans` / `spanCount` / `traceCount` / `durationSeconds` /
+ * `lastActivity*` / `hasError` / `traces` are computed from spans OWNED
+ * BY THIS NODE — descendants are nested via `children`, NOT folded into
+ * this node's totals. `descendantSpanCount` / `descendantHasError` are
+ * convenience aggregates for sidebar chips.
+ */
+export interface SessionNode {
+  // SessionGroup-compatible fields (existing consumers keep working):
+  id: string;
   sessionKey: string;
   displayLabel: string;
   serviceName: string;
@@ -64,7 +95,24 @@ export interface SessionGroup {
   durationSeconds: number;
   hasError: boolean;
   traces: TraceGroup[];
+  // Tree fields:
+  kind: SessionKind;
+  parentId: string | null;
+  children: SessionNode[];
+  /** All spans owned by THIS node (not its descendants). Useful for tests
+   *  and for components that want the raw spans without going through
+   *  `traces`. */
+  spans: SpanRow[];
+  // Subtree aggregates (post-order over children):
+  descendantSpanCount: number;
+  descendantHasError: boolean;
 }
+
+// Backward-compat alias so existing imports of SessionGroup keep working
+// without churning DetailsPane / sessionsFilter / App.tsx. The two names
+// are interchangeable; new consumers that traverse `children` should
+// import SessionNode for intent.
+export type SessionGroup = SessionNode;
 
 export type ActivityStatus = "active" | "idle" | "stale";
 
@@ -85,88 +133,152 @@ export interface Selection {
 }
 
 const DISTANT_PAST = -8.64e15; // sentinel for unparseable timestamps (matches Swift .distantPast semantics)
+const CLAUDE_SERVICE = "claude-code";
+const CODEX_SERVICE = "codex_exec";
 
-export function groupSpans(rows: SpanRow[]): SessionGroup[] {
+/**
+ * Public entry point. `groupSpans` keeps its historical name as a thin
+ * alias for `groupSpansToTree` so call sites don't churn; the returned
+ * array IS the forest's roots.
+ */
+export function groupSpans(rows: SpanRow[]): SessionNode[] {
+  return groupSpansToTree(rows);
+}
+
+export function groupSpansToTree(rows: SpanRow[]): SessionNode[] {
   if (rows.length === 0) return [];
 
-  // Bucket by effective session key.
-  const sessionBuckets = new Map<string, SpanRow[]>();
+  // Index every span globally by (traceId, spanId) so the codex parent.span.id
+  // walk has O(1) ancestor lookup. Cycle safety in the walker is enforced
+  // separately by a per-walk visited set; this map is purely lookup.
+  const spanByGlobalId = new Map<string, SpanRow>();
   for (const row of rows) {
-    const key = effectiveSessionKey(row);
-    let bucket = sessionBuckets.get(key);
-    if (!bucket) {
-      bucket = [];
-      sessionBuckets.set(key, bucket);
-    }
-    bucket.push(row);
+    spanByGlobalId.set(globalSpanId(row), row);
   }
 
-  const sessions: SessionGroup[] = [];
-  for (const [sessionKey, sessionRows] of sessionBuckets) {
-    const traces = traceGroups(sessionRows);
-    const sortedTraces = [...traces].sort((a, b) => {
-      if (a.rootStart === b.rootStart) {
-        return a.traceId < b.traceId ? -1 : a.traceId > b.traceId ? 1 : 0;
+  // Partition rows into the buckets the algorithm needs.
+  // - claudeRows: ServiceName=claude-code with a non-empty SessionId.
+  //   These form root nodes + subagent buckets.
+  // - codexRows: ServiceName=codex_exec WITH a stamped agent.session.id
+  //   (those are the only ones promoted to tree codex nodes, per the
+  //   stamped-data-only decision).
+  // - legacyRows: everything else (no claude SessionId, or un-stamped codex,
+  //   or agent-obs-sdk smoke spans). These fall through to the historical
+  //   effective-session-key path and become flat top-level nodes.
+  const claudeRowsBySession = new Map<string, SpanRow[]>();
+  const codexRowsBySession = new Map<string, SpanRow[]>();
+  const legacyRows: SpanRow[] = [];
+
+  for (const row of rows) {
+    if (row.ServiceName === CLAUDE_SERVICE && row.SessionId !== "") {
+      pushBucket(claudeRowsBySession, row.SessionId, row);
+      continue;
+    }
+    if (row.ServiceName === CODEX_SERVICE) {
+      const stampedSessionId = row.ResourceAttributesRaw["agent.session.id"];
+      if (stampedSessionId) {
+        pushBucket(codexRowsBySession, stampedSessionId, row);
+        continue;
       }
-      return b.rootStart - a.rootStart;
-    });
-
-    const projectName =
-      firstSortedNonEmpty(sessionRows.map((r) => r.ProjectName)) ??
-      firstSortedNonEmpty(sessionRows.map((r) => r.AgentProject)) ??
-      "";
-    const serviceName =
-      firstSortedNonEmpty(sessionRows.map((r) => r.ServiceName)) ??
-      "unknown service";
-    const dates = datedRows(sessionRows);
-    const last = latestEndingRow(dates);
-    const duration = durationSecondsFromDates(dates);
-
-    sessions.push({
-      id: sessionKey,
-      sessionKey,
-      displayLabel: displayLabel(projectName, sessionKey),
-      serviceName,
-      projectName,
-      lastActivity: last?.endDate ?? DISTANT_PAST,
-      lastActivityText: last?.row.Timestamp ?? "",
-      spanCount: sortedTraces.reduce((acc, t) => acc + t.spanCount, 0),
-      traceCount: sortedTraces.length,
-      durationSeconds: duration,
-      hasError: sortedTraces.some((t) => t.hasError),
-      traces: sortedTraces,
-    });
+    }
+    legacyRows.push(row);
   }
 
-  return sessions.sort((a, b) => {
-    if (a.lastActivity === b.lastActivity) {
-      return a.sessionKey < b.sessionKey
-        ? -1
-        : a.sessionKey > b.sessionKey
-          ? 1
-          : 0;
+  // First pass: build claude nodes + their subagent children.
+  // We also collect every dispatch-map agent_id so the codex parent walker
+  // knows which agent_ids count as "subagent" (vs root-Claude work spans).
+  const claudeNodesBySession = new Map<string, SessionNode>();
+  // Map agent_id (across all claude sessions) → the subagent node it
+  // resolves to. Used by codex parent.span.id resolution.
+  const subagentNodeByAgentId = new Map<string, SessionNode>();
+
+  for (const [sessionId, sessionRows] of claudeRowsBySession) {
+    const node = buildClaudeNode(sessionId, sessionRows, subagentNodeByAgentId);
+    claudeNodesBySession.set(sessionId, node);
+  }
+
+  // Second pass: build codex nodes + resolve their parents.
+  const orphanCodexRoots: SessionNode[] = [];
+  for (const [codexSessionId, codexRows] of codexRowsBySession) {
+    const node = buildCodexNode(codexSessionId, codexRows);
+    const parent = resolveCodexParent(
+      codexRows,
+      spanByGlobalId,
+      subagentNodeByAgentId,
+      claudeNodesBySession,
+    );
+    if (parent === "orphan") {
+      // Codex carries a parent.session.id but the claude session isn't in
+      // window. Mark visually so the operator can tell why it isn't nested.
+      node.displayLabel = `${node.displayLabel} // orphan parent`;
+      orphanCodexRoots.push(node);
+    } else if (parent === null) {
+      // Standalone codex — no Claude context. Top-level root.
+      orphanCodexRoots.push(node);
+    } else {
+      node.parentId = parent.id;
+      parent.children.push(node);
     }
-    return b.lastActivity - a.lastActivity;
-  });
+  }
+
+  // Third pass: any un-stamped codex / agent-obs-sdk / orphaned rows
+  // collapse through the historical effective-session-key path so they
+  // continue to render (just as flat top-level nodes, not promoted).
+  const legacyRoots = buildLegacyNodes(legacyRows);
+
+  // Forest = claude roots + standalone/orphan codex + legacy roots.
+  const forest: SessionNode[] = [];
+  for (const node of claudeNodesBySession.values()) forest.push(node);
+  for (const node of orphanCodexRoots) forest.push(node);
+  for (const node of legacyRoots) forest.push(node);
+
+  // Post-order: compute descendant aggregates + sort siblings.
+  for (const node of forest) finalizeSubtree(node);
+  return sortSiblings(forest);
+}
+
+/**
+ * Find a node anywhere in the forest by id. DFS, cycle-safe via visited
+ * set (children should never cycle, but the guard cheaply removes a
+ * footgun for any caller that constructs a hand-rolled forest in tests).
+ */
+export function findNodeById(
+  forest: SessionNode[],
+  id: string | null | undefined,
+): SessionNode | null {
+  if (!id) return null;
+  const visited = new Set<string>();
+  const stack: SessionNode[] = [...forest];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (visited.has(node.id)) continue;
+    visited.add(node.id);
+    if (node.id === id) return node;
+    for (const child of node.children) stack.push(child);
+  }
+  return null;
 }
 
 export function reconcileSelection(
-  sessions: SessionGroup[],
+  sessions: SessionNode[],
   selectedSessionId: string | null | undefined,
   selectedTraceId: string | null | undefined,
   selectedSpanId: string | null | undefined,
 ): Selection {
-  const sessionIds = new Set(sessions.map((s) => s.id));
+  // Walk the entire forest so a selected subagent / codex node (nested
+  // child) is preserved, not nulled because it isn't a top-level root.
+  const sessionIds = new Set<string>();
   const traceIds = new Set<string>();
   const spanIds = new Set<string>();
-  for (const s of sessions) {
-    for (const t of s.traces) {
+  const visit = (node: SessionNode): void => {
+    sessionIds.add(node.id);
+    for (const t of node.traces) {
       traceIds.add(t.id);
-      for (const span of t.spans) {
-        spanIds.add(spanRowId(span));
-      }
+      for (const s of t.spans) spanIds.add(spanRowId(s));
     }
-  }
+    for (const c of node.children) visit(c);
+  };
+  for (const s of sessions) visit(s);
 
   return {
     selectedSessionId:
@@ -186,7 +298,344 @@ export function spanRowId(row: SpanRow): string {
   return row.TraceId + row.SpanId;
 }
 
-// ---------- internals ----------
+// ---------- node construction ----------
+
+function buildClaudeNode(
+  sessionId: string,
+  sessionRows: SpanRow[],
+  subagentNodeByAgentId: Map<string, SessionNode>,
+): SessionNode {
+  // Identify dispatch agent_ids in this session. A dispatch span carries
+  // SpanAttributes['subagent_type'] AND its own agent_id is the "parent"
+  // (root agent's) — the subagent's own agent_id is on the dispatched
+  // work spans (first descendant carrying agent_id). The current SDK
+  // emits both the dispatch span and the subagent's own work spans
+  // tagged with the SAME subagent_id, so we resolve via tree-walk down
+  // ParentSpanId.
+  const dispatchAgentIdToSubagentType = buildDispatchAgentIdMap(sessionRows);
+
+  // Partition spans: those with agent_id present in the dispatch map
+  // belong to a subagent bucket; everything else stays on the claude node.
+  const claudeOwnSpans: SpanRow[] = [];
+  const subagentBuckets = new Map<string, SpanRow[]>();
+  for (const row of sessionRows) {
+    const agentId = row.SpanAttributesRaw["agent_id"] ?? "";
+    if (agentId !== "" && dispatchAgentIdToSubagentType.has(agentId)) {
+      pushBucket(subagentBuckets, agentId, row);
+    } else {
+      claudeOwnSpans.push(row);
+    }
+  }
+
+  const claudeNode = makeSessionNode({
+    kind: "claude",
+    id: sessionId,
+    sessionKey: sessionId,
+    parentId: null,
+    spans: claudeOwnSpans,
+    serviceNameFallback: CLAUDE_SERVICE,
+    displayLabelOverride: null,
+  });
+
+  // Build subagent children + register them in the cross-session map.
+  for (const [agentId, agentSpans] of subagentBuckets) {
+    const subagentType = dispatchAgentIdToSubagentType.get(agentId) ?? agentId;
+    const subagentId = `${sessionId}::subagent::${agentId}`;
+    const subagentNode = makeSessionNode({
+      kind: "subagent",
+      id: subagentId,
+      sessionKey: agentId,
+      parentId: claudeNode.id,
+      spans: agentSpans,
+      serviceNameFallback: CLAUDE_SERVICE,
+      displayLabelOverride: subagentType,
+    });
+    claudeNode.children.push(subagentNode);
+    subagentNodeByAgentId.set(agentId, subagentNode);
+  }
+
+  return claudeNode;
+}
+
+/**
+ * Find every (agent_id → subagent_type) pairing in this session. A
+ * dispatch span carries subagent_type as a span attribute; the dispatched
+ * subagent's own agent_id appears on the first descendant work span via
+ * tree-walk down ParentSpanId. Cycle-safe via visited set.
+ */
+function buildDispatchAgentIdMap(sessionRows: SpanRow[]): Map<string, string> {
+  const out = new Map<string, string>();
+  // Build a per-trace child index so descendant walks are O(children).
+  const childrenByParent = new Map<string, SpanRow[]>();
+  for (const row of sessionRows) {
+    const parentKey = globalSpanIdFor(row.TraceId, row.ParentSpanId);
+    pushBucket(childrenByParent, parentKey, row);
+  }
+
+  for (const dispatchSpan of sessionRows) {
+    const subagentType =
+      dispatchSpan.SpanAttributesRaw["subagent_type"] ?? "";
+    if (subagentType === "") continue;
+    const agentId = findFirstDescendantAgentId(dispatchSpan, childrenByParent);
+    if (agentId === null) continue;
+    // First-wins on collisions: a later dispatch span re-using the same
+    // agent_id should NOT overwrite the original subagent_type label.
+    if (!out.has(agentId)) out.set(agentId, subagentType);
+  }
+  return out;
+}
+
+function findFirstDescendantAgentId(
+  start: SpanRow,
+  childrenByParent: Map<string, SpanRow[]>,
+): string | null {
+  const visited = new Set<string>();
+  const stack: SpanRow[] = [start];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    const key = globalSpanId(node);
+    if (visited.has(key)) continue;
+    visited.add(key);
+    if (node !== start) {
+      const candidate = node.SpanAttributesRaw["agent_id"] ?? "";
+      if (candidate !== "") return candidate;
+    }
+    const children = childrenByParent.get(key);
+    if (children) {
+      for (const child of children) stack.push(child);
+    }
+  }
+  return null;
+}
+
+function buildCodexNode(codexSessionId: string, codexRows: SpanRow[]): SessionNode {
+  return makeSessionNode({
+    kind: "codex",
+    id: `codex::${codexSessionId}`,
+    sessionKey: codexSessionId,
+    parentId: null,
+    spans: codexRows,
+    serviceNameFallback: CODEX_SERVICE,
+    displayLabelOverride: null,
+  });
+}
+
+/**
+ * Resolve a codex node's parent per the two-tier fallback:
+ *   1. parent.span.id → walk up ParentSpanId to first ancestor whose
+ *      agent_id is in the dispatch map → that subagent node.
+ *   2. parent.session.id → that claude session node. If absent from the
+ *      window → "orphan" (top-level with a label hint).
+ *   3. else null → standalone top-level codex.
+ *
+ * The walk is bounded by rows.length and cycle-safe via visited set,
+ * matching computeTreeOrder's discipline.
+ */
+function resolveCodexParent(
+  codexRows: SpanRow[],
+  spanByGlobalId: Map<string, SpanRow>,
+  subagentNodeByAgentId: Map<string, SessionNode>,
+  claudeNodesBySession: Map<string, SessionNode>,
+): SessionNode | null | "orphan" {
+  // The resource attributes carrying agent.parent.* are emitted once per
+  // process and replicated across every span of the codex invocation. Read
+  // them off the first row — any row would do, but spec says
+  // ResourceAttributes['agent.parent.span.id'] / ['agent.parent.session.id'].
+  const first = codexRows[0];
+  if (!first) return null;
+  const parentSpanId =
+    first.ResourceAttributesRaw["agent.parent.span.id"] ?? "";
+  const parentSessionId =
+    first.ResourceAttributesRaw["agent.parent.session.id"] ?? "";
+
+  // Tier 1: walk up parent.span.id to find a subagent ancestor.
+  if (parentSpanId !== "") {
+    // The parent span lives in claude-code's trace, not codex's — so we
+    // must search across ALL traces for matching SpanId, not just within
+    // a particular TraceId. The global-id map is keyed on TraceId+SpanId
+    // which doesn't help here. Build a side index on SpanId once.
+    const subagentAncestor = walkToSubagentAncestor(
+      parentSpanId,
+      spanByGlobalId,
+      subagentNodeByAgentId,
+    );
+    if (subagentAncestor) return subagentAncestor;
+  }
+
+  // Tier 2: fall back to parent.session.id → claude node.
+  if (parentSessionId !== "") {
+    const claudeNode = claudeNodesBySession.get(parentSessionId);
+    if (claudeNode) return claudeNode;
+    return "orphan";
+  }
+
+  return null;
+}
+
+function walkToSubagentAncestor(
+  startSpanId: string,
+  spanByGlobalId: Map<string, SpanRow>,
+  subagentNodeByAgentId: Map<string, SessionNode>,
+): SessionNode | null {
+  // Build a side index on SpanId alone (no TraceId) since the codex stamp
+  // doesn't carry the parent's TraceId. If multiple spans across traces
+  // share the same SpanId (vanishingly unlikely for 64-bit OTel ids but
+  // not impossible), the first match wins — same heuristic computeTreeOrder
+  // uses elsewhere when it bounds by rows.length. Built lazily per call to
+  // avoid carrying a stale snapshot.
+  const bySpanId = new Map<string, SpanRow>();
+  for (const row of spanByGlobalId.values()) {
+    if (!bySpanId.has(row.SpanId)) bySpanId.set(row.SpanId, row);
+  }
+  const visited = new Set<string>();
+  let currentSpanId: string = startSpanId;
+  let depth = 0;
+  const maxDepth = Math.min(1000, spanByGlobalId.size);
+  while (currentSpanId !== "" && depth < maxDepth) {
+    if (visited.has(currentSpanId)) return null;
+    visited.add(currentSpanId);
+    const row = bySpanId.get(currentSpanId);
+    if (!row) return null;
+    const agentId = row.SpanAttributesRaw["agent_id"] ?? "";
+    if (agentId !== "") {
+      const subagent = subagentNodeByAgentId.get(agentId);
+      if (subagent) return subagent;
+    }
+    currentSpanId = row.ParentSpanId;
+    if (
+      currentSpanId === "" ||
+      currentSpanId === "0000000000000000"
+    ) {
+      return null;
+    }
+    depth += 1;
+  }
+  return null;
+}
+
+/**
+ * Build flat nodes for rows that didn't fit the tree (un-stamped codex,
+ * agent-obs-sdk smoke, claude-code without a SessionId). Uses the historical
+ * effective-session-key bucketing so legacy data continues to render.
+ */
+function buildLegacyNodes(rows: SpanRow[]): SessionNode[] {
+  if (rows.length === 0) return [];
+  const buckets = new Map<string, SpanRow[]>();
+  for (const row of rows) {
+    pushBucket(buckets, effectiveSessionKey(row), row);
+  }
+  const nodes: SessionNode[] = [];
+  for (const [key, bucketRows] of buckets) {
+    // Pick a sensible kind: codex_exec rows → "codex" (even when
+    // un-stamped — service.name is enough to color them), claude-code → "claude",
+    // everything else → "claude" as the neutral default so the existing
+    // CSS/tooltips don't break.
+    const kind: SessionKind =
+      bucketRows[0]?.ServiceName === CODEX_SERVICE ? "codex" : "claude";
+    nodes.push(
+      makeSessionNode({
+        kind,
+        id: key,
+        sessionKey: key,
+        parentId: null,
+        spans: bucketRows,
+        serviceNameFallback: bucketRows[0]?.ServiceName ?? "unknown service",
+        displayLabelOverride: null,
+      }),
+    );
+  }
+  return nodes;
+}
+
+interface MakeNodeInput {
+  kind: SessionKind;
+  id: string;
+  sessionKey: string;
+  parentId: string | null;
+  spans: SpanRow[];
+  serviceNameFallback: string;
+  /** When set, replaces the default project-prefixed label. Used for
+   *  subagent nodes whose label is the subagent_type, and codex nodes
+   *  whose label is the agent.session.id. */
+  displayLabelOverride: string | null;
+}
+
+function makeSessionNode(input: MakeNodeInput): SessionNode {
+  const { kind, id, sessionKey, parentId, spans, serviceNameFallback } = input;
+  const traces = traceGroups(spans);
+  const sortedTraces = [...traces].sort((a, b) => {
+    if (a.rootStart === b.rootStart) {
+      return a.traceId < b.traceId ? -1 : a.traceId > b.traceId ? 1 : 0;
+    }
+    return b.rootStart - a.rootStart;
+  });
+  const projectName =
+    firstSortedNonEmpty(spans.map((r) => r.ProjectName)) ??
+    firstSortedNonEmpty(spans.map((r) => r.AgentProject)) ??
+    "";
+  const serviceName =
+    firstSortedNonEmpty(spans.map((r) => r.ServiceName)) ??
+    serviceNameFallback ??
+    "unknown service";
+  const dates = datedRows(spans);
+  const last = latestEndingRow(dates);
+  const duration = durationSecondsFromDates(dates);
+
+  return {
+    id,
+    sessionKey,
+    displayLabel:
+      input.displayLabelOverride ?? displayLabel(projectName, sessionKey),
+    serviceName,
+    projectName,
+    lastActivity: last?.endDate ?? DISTANT_PAST,
+    lastActivityText: last?.row.Timestamp ?? "",
+    spanCount: sortedTraces.reduce((acc, t) => acc + t.spanCount, 0),
+    traceCount: sortedTraces.length,
+    durationSeconds: duration,
+    hasError: sortedTraces.some((t) => t.hasError),
+    traces: sortedTraces,
+    kind,
+    parentId,
+    children: [],
+    spans,
+    descendantSpanCount: 0,
+    descendantHasError: false,
+  };
+}
+
+/**
+ * Post-order pass: compute descendant aggregates AND sort each level's
+ * siblings by lastActivity desc with the same string tie-break used by
+ * the historical groupSpans path.
+ */
+function finalizeSubtree(node: SessionNode): void {
+  for (const child of node.children) finalizeSubtree(child);
+  let descSpans = 0;
+  let descError = false;
+  for (const child of node.children) {
+    descSpans += child.spanCount + child.descendantSpanCount;
+    if (child.hasError || child.descendantHasError) descError = true;
+  }
+  node.descendantSpanCount = descSpans;
+  node.descendantHasError = descError;
+  node.children = sortSiblings(node.children);
+}
+
+function sortSiblings(nodes: SessionNode[]): SessionNode[] {
+  return [...nodes].sort((a, b) => {
+    if (a.lastActivity === b.lastActivity) {
+      return a.sessionKey < b.sessionKey
+        ? -1
+        : a.sessionKey > b.sessionKey
+          ? 1
+          : 0;
+    }
+    return b.lastActivity - a.lastActivity;
+  });
+}
+
+// ---------- shared helpers (preserved from the original file) ----------
 
 interface TreeKey {
   traceId: string;
@@ -194,6 +643,22 @@ interface TreeKey {
 }
 function treeKey(k: TreeKey): string {
   return `${k.traceId} ${k.spanId}`;
+}
+
+function globalSpanId(row: SpanRow): string {
+  return treeKey({ traceId: row.TraceId, spanId: row.SpanId });
+}
+function globalSpanIdFor(traceId: string, spanId: string): string {
+  return treeKey({ traceId, spanId });
+}
+
+function pushBucket<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  let bucket = map.get(key);
+  if (!bucket) {
+    bucket = [];
+    map.set(key, bucket);
+  }
+  bucket.push(value);
 }
 
 export function computeTreeOrder(rows: SpanRow[]): SpanRow[] {
