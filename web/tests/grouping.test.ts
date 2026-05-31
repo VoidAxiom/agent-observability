@@ -1151,6 +1151,70 @@ describe("groupSpansToTree (VOI-386)", () => {
     expect(sub.children[0]!.sessionKey).toBe("codex-orphan");
   });
 
+  it("dispatch-absent nested: span tree preserves claude → outer → inner subagent linkage (codex P2 round-4 2026-05-31)", () => {
+    // When BOTH the outer subagent's dispatch span AND the inner
+    // subagent's dispatch span have aged out of the polling window,
+    // but the work spans (with agent_ids) are still present, the span
+    // tree (ParentSpanId chain) still preserves the linkage:
+    //   claude-root → outer-work (agent_id=outer) → inner-work (agent_id=inner)
+    // The bucketing must derive `outerAgentId` from the span tree
+    // (walk up ParentSpanId until the first ancestor with a different
+    // agent_id) so the inner subagent nests under the outer instead of
+    // flattening to a sibling under the claude root.
+    const forest = groupSpansToTree([
+      // Claude root span — no agent_id.
+      claudeSpan({
+        sessionId: "sess-nested-orphan",
+        spanId: "root-w",
+        timestamp: "2026-01-01T00:20:00.000000000",
+      }),
+      // OUTER subagent work span — its dispatch span is OUT of window.
+      claudeSpan({
+        sessionId: "sess-nested-orphan",
+        spanId: "outer-w-1",
+        parentSpanId: "root-w",
+        timestamp: "2026-01-01T00:20:01.000000000",
+        agentId: "outer-agent",
+      }),
+      // INNER subagent work span, parented under the OUTER work span.
+      // The inner's dispatch span is ALSO out of window.
+      claudeSpan({
+        sessionId: "sess-nested-orphan",
+        spanId: "inner-w-1",
+        parentSpanId: "outer-w-1",
+        timestamp: "2026-01-01T00:20:02.000000000",
+        agentId: "inner-agent",
+      }),
+      claudeSpan({
+        sessionId: "sess-nested-orphan",
+        spanId: "inner-w-2",
+        parentSpanId: "inner-w-1",
+        timestamp: "2026-01-01T00:20:03.000000000",
+        agentId: "inner-agent",
+      }),
+    ]);
+
+    const root = findRootBySession(forest, "sess-nested-orphan");
+    // Claude root → ONE child (outer subagent).
+    expect(root.children.length).toBe(1);
+    const outer = root.children[0]!;
+    expect(outer.kind).toBe("subagent");
+    expect(outer.displayLabel).toBe("outer-agent");
+    // Outer subagent → ONE child (inner subagent), NOT flattened to a
+    // sibling under root.
+    expect(outer.children.length).toBe(1);
+    const inner = outer.children[0]!;
+    expect(inner.kind).toBe("subagent");
+    expect(inner.displayLabel).toBe("inner-agent");
+    expect(inner.parentId).toBe(outer.id);
+    // Span ownership: outer owns outer-w-1; inner owns the two inner spans.
+    expect(outer.spans.map((s) => s.SpanId).sort()).toEqual(["outer-w-1"]);
+    expect(inner.spans.map((s) => s.SpanId).sort()).toEqual([
+      "inner-w-1",
+      "inner-w-2",
+    ]);
+  });
+
   it("groupSpans alias matches groupSpansToTree output", () => {
     const rows = [
       claudeSpan({

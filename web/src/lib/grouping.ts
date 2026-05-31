@@ -386,11 +386,29 @@ function buildClaudeNode(
     outerAgentId: string;
     node: SessionNode;
   }
+  // Per-session SpanId → row index used to derive outerAgentId via the
+  // span tree when dispatch info is absent (codex P2 round-4 2026-05-31).
+  // Scoped to sessionRows so cross-session SpanId collisions cannot
+  // misdirect the walk.
+  const spanBySpanInSession = new Map<string, SpanRow>();
+  for (const row of sessionRows) {
+    if (!spanBySpanInSession.has(row.SpanId)) {
+      spanBySpanInSession.set(row.SpanId, row);
+    }
+  }
+
   const pending: PendingSubagent[] = [];
   for (const [agentId, agentSpans] of subagentBuckets) {
     const info = dispatchInfo.get(agentId);
     const subagentType = info?.subagentType ?? agentId;
-    const outerAgentId = info?.outerAgentId ?? "";
+    // outerAgentId: prefer the dispatch-derived value; fall back to a
+    // span-tree walk for dispatch-absent windows (codex P2 round-4
+    // 2026-05-31). Without this, a nested subagent whose dispatch span
+    // aged out of the polling window flattens to a sibling under claude
+    // root even though the span tree still preserves the linkage.
+    const outerAgentId =
+      info?.outerAgentId ??
+      deriveOuterAgentIdFromSpanTree(agentSpans, agentId, spanBySpanInSession);
     const subagentId = `${sessionId}::subagent::${agentId}`;
     const subagentNode = makeSessionNode({
       kind: "subagent",
@@ -515,6 +533,52 @@ function findFirstDescendantAgentId(
     }
   }
   return null;
+}
+
+/**
+ * Derive the outer subagent's agent_id from the span tree when the
+ * dispatch span isn't in the polling window. Walks up ParentSpanId from
+ * one of the bucket's own spans; the first ancestor whose agent_id
+ * differs from this bucket's IS the outer subagent's agent_id. Empty
+ * string means "no outer subagent found" (i.e. the bucket sits directly
+ * under the claude root).
+ *
+ * Codex P2 round-4 2026-05-31: required to preserve nested
+ * claude → outer subagent → inner subagent linkage when the outer's
+ * dispatch span has aged out — the span-tree linkage survives the
+ * window edge even when the dispatch metadata doesn't.
+ */
+function deriveOuterAgentIdFromSpanTree(
+  bucketSpans: SpanRow[],
+  bucketAgentId: string,
+  spanBySpanInSession: Map<string, SpanRow>,
+): string {
+  // Use the first span as the walk anchor — all spans in the bucket share
+  // the same agent_id by construction, so any one of them gives the same
+  // outer agent_id answer.
+  const start = bucketSpans[0];
+  if (!start) return "";
+  const visited = new Set<string>();
+  let cursor = start.ParentSpanId;
+  let depth = 0;
+  const maxDepth = Math.min(1000, spanBySpanInSession.size);
+  while (
+    cursor !== "" &&
+    cursor !== "0000000000000000" &&
+    depth < maxDepth
+  ) {
+    if (visited.has(cursor)) return "";
+    visited.add(cursor);
+    const row = spanBySpanInSession.get(cursor);
+    if (!row) return "";
+    const ancestorAgentId = row.SpanAttributesRaw["agent_id"] ?? "";
+    if (ancestorAgentId !== "" && ancestorAgentId !== bucketAgentId) {
+      return ancestorAgentId;
+    }
+    cursor = row.ParentSpanId;
+    depth += 1;
+  }
+  return "";
 }
 
 function buildCodexNode(codexSessionId: string, codexRows: SpanRow[]): SessionNode {
