@@ -292,7 +292,7 @@ describe("usePolledSpans", () => {
           return {
             rows: [row("a", "session-a")],
             truncated: true,
-            rawRowCount: 250_001,
+            rawRowCount: 50_001,
           };
         }
         return {
@@ -323,7 +323,7 @@ describe("usePolledSpans", () => {
       // Warn cites the RAW row count (the count truncated was decided
       // from), not rows.length. Codex P2 round-3 2026-05-30.
       const warnText = warnSpy.mock.calls[0]?.[0] as string;
-      expect(warnText).toContain("250001 raw rows");
+      expect(warnText).toContain("50001 raw rows");
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60);

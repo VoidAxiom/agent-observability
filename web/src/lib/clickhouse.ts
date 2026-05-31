@@ -25,7 +25,7 @@ function buildSelect(windowHours: number, limitCeiling: number): string {
   // `INTERVAL NaN HOUR` or `LIMIT 1.5`. The discipline lives where the
   // value is consumed.
   assertPositiveInt(windowHours, "windowHours");
-  assertPositiveInt(limitCeiling, "limitCeiling");
+  assertPositiveInt(limitCeiling, "limitCeiling", MAX_LIMIT_CEILING);
   // Query LIMIT is ceiling+1 so the (rawRowCount > ceiling) test in
   // fetchOnce can distinguish "happened to grab exactly ceiling rows
   // because that's all CH had" from "actually truncated, there were
@@ -76,22 +76,43 @@ export interface ClickHouseQueryConfig {
 }
 
 const DEFAULT_WINDOW_HOURS = 1;
-// Ceiling sized so the chip's "// window truncated" reads as an ALARM,
-// not background noise, at the documented steady-state ingest the bug
-// was filed against. The motivating case (per the buildSelect comment)
-// was ~67 spans/sec sustained, i.e. ~241k spans/hour. A 50k ceiling
-// would be permanently tripped on any busy box and operators would
-// habituate to the chip — defeating the warn-once semantic. 250k gives
-// just over an hour of headroom at peak before truncation; on quieter
-// boxes (the typical dev case) the chip stays dark and means something
-// when it lights up. Operator can lower CH_QUERY_LIMIT_CEILING via env
-// if they want a tighter probe.
-const DEFAULT_LIMIT_CEILING = 250_000;
+// Ceiling matches the source brief for VOI-382 (50000). At peak ingest
+// (~67 spans/sec sustained, the bug-filing rate) this ceiling WILL be
+// tripped on busy boxes and the chip will stay lit — that's the
+// intended signal that the operator should tune via env. The earlier
+// 250k pick was a polish on chip-alarm-vs-background-noise UX, but it
+// diverged from the source brief without an acknowledgment block;
+// reverted per CLAUDE.md § "Spec authoring — load-bearing discipline".
+// Operators on busier boxes can raise CH_QUERY_LIMIT_CEILING; a
+// follow-up packet can revisit the default with measured data.
+const DEFAULT_LIMIT_CEILING = 50_000;
+// Reject ceilings large enough to (a) overflow what CH renders without
+// exponential notation (toString switches to `1e+21` at 1e21, producing
+// `LIMIT 1e+21` which CH 500s on) and (b) be obvious env typos. The
+// real cap is operator-judgement-driven; 10M is high enough that anyone
+// hitting it is mis-using the knob.
+const MAX_LIMIT_CEILING = 10_000_000;
 
-function assertPositiveInt(n: number, name: string): void {
+function assertPositiveInt(
+  n: number,
+  name: string,
+  upperBound?: number,
+): void {
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
     throw new ClickHouseError(
       `Invalid ${name} ${JSON.stringify(n)}: must be a positive integer`,
+      0,
+    );
+  }
+  // Number.isInteger returns true for values up to ~1e21, but
+  // toString() switches to exponential notation at ~1e21 ("1e+21"),
+  // which CH then 500s on as malformed SQL. An upper bound also
+  // catches obvious env typos like CH_QUERY_LIMIT_CEILING=1e9999 that
+  // would otherwise show up as a generic "ClickHouse HTTP 500" with
+  // no hint that the env var is the culprit. Codex P2 round-5 2026-05-30.
+  if (upperBound !== undefined && n > upperBound) {
+    throw new ClickHouseError(
+      `Invalid ${name} ${n}: must be ≤ ${upperBound}`,
       0,
     );
   }
@@ -412,7 +433,7 @@ export function decodeRows(text: string): SpanRow[] {
  * ceiling" robustly: a single malformed JSONEachRow line must not flip
  * the truncation chip off when CH actually returned limitCeiling rows.
  * Folded into the decoder so the full text isn't scanned twice per poll
- * (default ceiling is 250k rows; a multi-MB payload every 5s is enough
+ * (default ceiling is 50k rows; a multi-MB payload every 5s is enough
  * that doing the same line-split twice adds up).
  */
 export function decodeRowsWithCount(text: string): {

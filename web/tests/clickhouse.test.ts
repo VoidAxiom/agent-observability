@@ -271,16 +271,14 @@ describe("buildRequestUrl", () => {
 });
 
 describe("loadQueryConfigFromEnv", () => {
-  it("returns defaults when no env vars are set (1h window, 250k ceiling — chip is an alarm, not background noise)", () => {
-    // Defaults documented in CLAUDE.md / VOI-382: 1h scrollback, 250k
-    // safety ceiling. Ceiling is large enough that the chip stays
-    // dark on quiet boxes and means something when it lights up
-    // (codex P2 round-4 2026-05-30 — 50k would permanently truncate
-    // at the documented steady-state ingest of ~67 spans/sec and
-    // habituate operators to the chip).
+  it("returns defaults when no env vars are set (1h window, 50k ceiling — matches VOI-382 source brief)", () => {
+    // Defaults match the VOI-382 brief verbatim (1h, 50k). At peak
+    // ingest the chip WILL fire on busy boxes — that's the signal to
+    // tune via env. A follow-up packet can revisit the default with
+    // measured data.
     expect(loadQueryConfigFromEnv(envFrom({}))).toEqual({
       windowHours: 1,
-      limitCeiling: 250_000,
+      limitCeiling: 50_000,
     });
   });
 
@@ -390,6 +388,30 @@ describe("fetchOnce SQL-construction boundary validation", () => {
         }),
       ).rejects.toThrow(ClickHouseError);
     }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects a limitCeiling above MAX_LIMIT_CEILING (so env typos like 1e21 surface as a named error, not a generic CH 500)", async () => {
+    // Regression: /code-review round-5 P2 2026-05-30. Number.isInteger
+    // returns true up to ~1e21, but Number.prototype.toString switches
+    // to exponential at ~1e21 ("1e+21"), producing SQL like `LIMIT 1e+21`
+    // which CH 500s on. The upper bound catches the obvious typo class
+    // at the SQL-construction boundary so the operator sees the env-var
+    // name in the error instead of debugging a CH outage.
+    const fetchImpl = vi.fn();
+    const cfg = {
+      host: "localhost",
+      port: 8123,
+      database: "default",
+      username: "default",
+      password: "",
+    };
+    await expect(
+      fetchOnce(cfg, fetchImpl as unknown as typeof fetch, {
+        windowHours: 1,
+        limitCeiling: 1e15,
+      }),
+    ).rejects.toThrow(ClickHouseError);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

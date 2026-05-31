@@ -342,6 +342,16 @@ const paneHeaderHintStyle: CSSProperties = {
 };
 
 const truncationChipStyle: CSSProperties = {
+  // position:sticky keeps the chip pinned to the top of the scrolling
+  // <aside> in the populated branch so it stays visible after the
+  // operator scrolls down through buckets. Without it, the chip
+  // scrolls out of viewport alongside the header in any pane with
+  // ~10+ sessions — defeating the chip's signaling purpose precisely
+  // when truncation has produced enough sessions to fill the pane.
+  // Codex P2 round-5 2026-05-30.
+  position: "sticky",
+  top: 0,
+  zIndex: 2,
   margin: "2px 4px 0",
   padding: "4px 8px",
   fontFamily: "var(--font-mono)",

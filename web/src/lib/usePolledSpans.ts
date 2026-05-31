@@ -39,7 +39,7 @@ export interface PolledSpansState {
   loading: boolean;
   /**
    * True iff the most recent poll's row count hit the safety ceiling
-   * (CH_QUERY_LIMIT_CEILING / VITE_CH_QUERY_LIMIT_CEILING — default 250k).
+   * (CH_QUERY_LIMIT_CEILING / VITE_CH_QUERY_LIMIT_CEILING — default 50k).
    * The SessionSidebar shows
    * a "// window truncated" chip when this is true so the operator knows
    * the visible session list might be missing older sessions whose latest
@@ -111,6 +111,12 @@ export function usePolledSpans(
     // anything committed in the new epoch). The cancelled-closure scopes
     // the guard to THIS effect run.
     let cancelled = false;
+    // Reset the per-truncation-transition dedupe so each polling epoch
+    // is independent — without this, a parent re-render that bumps
+    // intervalMs (or any other deps) re-runs this effect with a sticky
+    // lastTruncatedRef.current=true, suppressing the warn on the new
+    // epoch's first truncated tick. Codex P2 round-5 2026-05-30.
+    lastTruncatedRef.current = false;
 
     const resolveConfig = (): ClickHouseConfig => {
       if (configRef.current) return configRef.current;
