@@ -351,6 +351,43 @@ describe("loadQueryConfigFromEnv", () => {
   });
 });
 
+describe("fetchOnce SQL-construction boundary validation", () => {
+  it("rejects a non-positive-integer windowHours at the SQL-construction site (not just at the env loader)", async () => {
+    // Regression: /code-review round-2 P2 2026-05-30. ClickHouseQueryConfig
+    // is typed as `{ windowHours: number; limitCeiling: number }`, so a
+    // direct caller (test, future Tauri wiring, anyone constructing the
+    // config without going through loadQueryConfigFromEnv) could pass
+    // 1.5 / NaN / 0 / Infinity and produce malformed SQL like
+    // `INTERVAL NaN HOUR`. Validation lives where the value is consumed.
+    const fetchImpl = vi.fn();
+    const cfg = {
+      host: "localhost",
+      port: 8123,
+      database: "default",
+      username: "default",
+      password: "",
+    };
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(
+        fetchOnce(cfg, fetchImpl as unknown as typeof fetch, {
+          windowHours: bad,
+          limitCeiling: 100,
+        }),
+      ).rejects.toThrow(ClickHouseError);
+    }
+    // Same for limitCeiling.
+    for (const bad of [0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(
+        fetchOnce(cfg, fetchImpl as unknown as typeof fetch, {
+          windowHours: 1,
+          limitCeiling: bad,
+        }),
+      ).rejects.toThrow(ClickHouseError);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 describe("fetchOnce", () => {
   it("POSTs to the same-origin /ch path, not the absolute upstream URL", async () => {
     // Regression: an earlier impl POSTed directly to

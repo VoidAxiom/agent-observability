@@ -17,6 +17,15 @@ import type { SpanRow } from "./grouping";
 // Windowed query keeps a 1h scrollback by default; the ceiling is a
 // safety cap so a quiet table can never load the entire history.
 function buildSelect(windowHours: number, limitCeiling: number): string {
+  // Validate at the SQL-construction boundary, not just at the env loader.
+  // ClickHouseQueryConfig is typed as `{ windowHours: number; limitCeiling: number }`,
+  // so a direct caller (test, future Tauri runtime wiring, anyone
+  // constructing the config without going through loadQueryConfigFromEnv)
+  // could pass 1.5, NaN, Infinity, or 0 and produce malformed SQL like
+  // `INTERVAL NaN HOUR` or `LIMIT 1.5`. The discipline lives where the
+  // value is consumed.
+  assertPositiveInt(windowHours, "windowHours");
+  assertPositiveInt(limitCeiling, "limitCeiling");
   return `SELECT
   TraceId, SpanId, ParentSpanId, SpanName, Timestamp, ServiceName,
   ResourceAttributes['agent.project']    AS AgentProject,
@@ -59,6 +68,15 @@ export interface ClickHouseQueryConfig {
 
 const DEFAULT_WINDOW_HOURS = 1;
 const DEFAULT_LIMIT_CEILING = 50_000;
+
+function assertPositiveInt(n: number, name: string): void {
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    throw new ClickHouseError(
+      `Invalid ${name} ${JSON.stringify(n)}: must be a positive integer`,
+      0,
+    );
+  }
+}
 
 // Hostname grammar accepted by buildEndpointUrl. Conservative: DNS labels +
 // IPv4 + bracketed IPv6. Rejects userinfo (`@`), path (`/`), query (`?`),
@@ -128,26 +146,29 @@ export function loadQueryConfigFromEnv(
   // while the loader looked at VITE_CH_QUERY_LIMIT_CEILING only. The
   // error message names whichever variant the operator actually set, so
   // the typo callout points at the right line in their .env.
-  const window = pickRawEnv(
+  // `windowEnv` not `window` — `window` would shadow the browser global
+  // (this file is bundled into a hook that uses window.setInterval). No
+  // bug today, but the shadow is a footgun if the helper grows.
+  const windowEnv = pickRawEnv(
     env,
     "CH_QUERY_WINDOW_HOURS",
     "VITE_CH_QUERY_WINDOW_HOURS",
   );
-  const ceiling = pickRawEnv(
+  const ceilingEnv = pickRawEnv(
     env,
     "CH_QUERY_LIMIT_CEILING",
     "VITE_CH_QUERY_LIMIT_CEILING",
   );
   return {
     windowHours: parsePositiveIntEnv(
-      window.raw,
+      windowEnv.raw,
       DEFAULT_WINDOW_HOURS,
-      window.name,
+      windowEnv.name,
     ),
     limitCeiling: parsePositiveIntEnv(
-      ceiling.raw,
+      ceilingEnv.raw,
       DEFAULT_LIMIT_CEILING,
-      ceiling.name,
+      ceilingEnv.name,
     ),
   };
 }
@@ -279,11 +300,13 @@ export function buildRequestUrl(config: ClickHouseConfig): string {
 export interface FetchResult {
   rows: SpanRow[];
   /**
-   * True iff ClickHouse returned exactly limitCeiling rows. Indicates the
-   * window-query hit its safety cap and earlier spans were silently dropped
-   * — the SessionSidebar surfaces this as a "// window truncated" chip so
-   * the operator knows to raise VITE_CH_QUERY_LIMIT_CEILING (or shorten
-   * VITE_CH_QUERY_WINDOW_HOURS).
+   * True iff the raw CH response contained at least limitCeiling rows
+   * (counted BEFORE coercion drops any malformed ones). Indicates the
+   * window-query hit its safety cap and earlier spans were silently
+   * dropped — SessionSidebar surfaces it as a "// window truncated"
+   * chip so the operator knows to raise CH_QUERY_LIMIT_CEILING (or
+   * VITE_CH_QUERY_LIMIT_CEILING as the web-only fallback) or shorten
+   * CH_QUERY_WINDOW_HOURS.
    */
   truncated: boolean;
 }
@@ -314,63 +337,13 @@ export async function fetchOnce(
     );
   }
   const text = await response.text();
-  const rows = decodeRows(text);
-  // Compute truncated from the RAW response shape, not from rows.length:
-  // decodeRows silently skips malformed JSONEachRow lines (matches the
-  // Swift impl's log+continue), so a single bad row when CH actually
-  // returned exactly limitCeiling rows would otherwise produce
-  // rows.length = ceiling-1 → false-negative on the truncation chip,
-  // and the operator would never see the signal VOI-382 was built to
-  // surface. countRawRows counts what CH SENT, not what we managed to
-  // parse, so the cap-was-hit detection is robust to row-level decode
-  // failures.
-  const rawCount = countRawRows(text);
-  return { rows, truncated: rawCount >= queryConfig.limitCeiling };
-}
-
-/**
- * Count the row units in a ClickHouse JSONEachRow / JSON-array / single-
- * object payload WITHOUT requiring each row to parse — used to detect
- * the "result hit limitCeiling" condition robustly. Mirrors decodeRows'
- * branch shape; for the JSON-array case we still parse (the array LENGTH
- * is the truth, and a malformed array gracefully reports 0 rather than
- * an incorrect cap-hit).
- */
-function countRawRows(text: string): number {
-  const trimmed = text.trim();
-  if (trimmed === "") return 0;
-  if (trimmed[0] === "[") {
-    try {
-      const arr = JSON.parse(trimmed) as unknown;
-      if (Array.isArray(arr)) return arr.length;
-    } catch {
-      // fall through to line-by-line.
-    }
-  }
-  if (trimmed[0] === "{") {
-    // Could be JSONEachRow (multiple top-level objects, one per line) OR
-    // a single pretty-printed object. The newline-split below handles
-    // both: a single pretty-printed object spans many lines, only one of
-    // which starts with `{`. Match that heuristic — count non-empty
-    // lines whose first non-space char is `{`.
-  }
-  let count = 0;
-  for (const rawLine of trimmed.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line === "") continue;
-    if (line[0] === "{") count += 1;
-  }
-  // Pretty-printed single object: many `{` lines (nested), but
-  // decodeRows would still emit 1 row. Cap at the number of
-  // top-level lines starting with `{` — for the JSONEachRow case
-  // (the production path) that's exact; for pretty-printed
-  // multi-line single object it would over-count, but the chip
-  // would only mis-trigger if the user's CH was returning a
-  // pretty-printed single-object payload AND that object's raw text
-  // happened to have ≥ limitCeiling internal `{` characters at
-  // line-start. Production CH JSONEachRow never produces that
-  // shape; this is acceptable.
-  return count;
+  // Single-pass decode that also reports the raw row count CH sent us
+  // (NOT the parsed-row count — decodeRows silently skips malformed
+  // JSONEachRow lines, so a single bad row at exactly limitCeiling rows
+  // would otherwise false-negative the truncation chip and recreate the
+  // silent-data-loss failure mode VOI-382 was filed to surface).
+  const { rows, rawRowCount } = decodeRowsWithCount(text);
+  return { rows, truncated: rawRowCount >= queryConfig.limitCeiling };
 }
 
 export class ClickHouseError extends Error {
@@ -390,17 +363,37 @@ export class ClickHouseError extends Error {
  *   - a single top-level object (pretty-printed single-row fixture)
  */
 export function decodeRows(text: string): SpanRow[] {
+  return decodeRowsWithCount(text).rows;
+}
+
+/**
+ * Same as decodeRows but ALSO reports the raw row count CH sent — i.e.
+ * the number of row UNITS in the payload before coercion drops any that
+ * fail to parse. Used by fetchOnce to detect "result hit the safety
+ * ceiling" robustly: a single malformed JSONEachRow line must not flip
+ * the truncation chip off when CH actually returned limitCeiling rows.
+ * Folded into the decoder so the full text isn't scanned twice per poll
+ * (default ceiling is 50k rows; a multi-MB payload every 5s is enough
+ * that doing the same line-split twice adds up).
+ */
+export function decodeRowsWithCount(text: string): {
+  rows: SpanRow[];
+  rawRowCount: number;
+} {
   const trimmed = text.trim();
-  if (trimmed === "") return [];
+  if (trimmed === "") return { rows: [], rawRowCount: 0 };
 
   // Try array first.
   if (trimmed[0] === "[") {
     try {
       const arr = JSON.parse(trimmed) as unknown;
       if (Array.isArray(arr)) {
-        return arr
+        const rows = arr
           .map((item) => coerceRow(item))
           .filter((r): r is SpanRow => r !== null);
+        // Array length is the authoritative raw count — even items that
+        // fail coerceRow are still "rows CH sent" for cap-hit detection.
+        return { rows, rawRowCount: arr.length };
       }
     } catch {
       // fall through to line-by-line.
@@ -413,18 +406,22 @@ export function decodeRows(text: string): SpanRow[] {
       const obj = JSON.parse(trimmed) as unknown;
       if (obj && typeof obj === "object" && !Array.isArray(obj)) {
         const row = coerceRow(obj);
-        return row ? [row] : [];
+        return { rows: row ? [row] : [], rawRowCount: 1 };
       }
     } catch {
       // fall through.
     }
   }
 
-  // JSONEachRow: split on newlines.
+  // JSONEachRow: split on newlines. rawRowCount counts every non-empty
+  // line as one "row CH sent", even ones that fail JSON.parse — this is
+  // what makes the truncation chip robust to malformed-row drops.
   const rows: SpanRow[] = [];
+  let rawRowCount = 0;
   for (const rawLine of trimmed.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (line === "") continue;
+    rawRowCount += 1;
     try {
       const parsed = JSON.parse(line) as unknown;
       const row = coerceRow(parsed);
@@ -433,7 +430,7 @@ export function decodeRows(text: string): SpanRow[] {
       // skip malformed lines; matches Swift behavior (log+continue).
     }
   }
-  return rows;
+  return { rows, rawRowCount };
 }
 
 function coerceRow(input: unknown): SpanRow | null {

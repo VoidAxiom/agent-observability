@@ -165,8 +165,8 @@ export function usePolledSpans(
         console.warn(
           `[usePolledSpans] ClickHouse result hit the row-count safety ceiling ` +
             `(${rows.length} rows). Older spans within the configured time window ` +
-            `were dropped. Raise VITE_CH_QUERY_LIMIT_CEILING or shorten ` +
-            `VITE_CH_QUERY_WINDOW_HOURS.`,
+            `were dropped. Raise CH_QUERY_LIMIT_CEILING (or VITE_CH_QUERY_LIMIT_CEILING ` +
+            `as a web-only fallback), or shorten CH_QUERY_WINDOW_HOURS.`,
         );
       }
       lastTruncatedRef.current = truncated;

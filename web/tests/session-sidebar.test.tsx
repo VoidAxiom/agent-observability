@@ -178,7 +178,33 @@ describe("SessionSidebar", () => {
     const chip = container.querySelector('[data-truncation-chip="true"]');
     expect(chip).not.toBeNull();
     expect(chip?.textContent ?? "").toMatch(/truncated/i);
-    expect(chip?.textContent ?? "").toMatch(/VITE_CH_QUERY_LIMIT_CEILING/);
+    // Chip leads with the repo-standard CH_* name (matches .env.example,
+    // migrate.sh, docker-compose, Swift app). VITE_* fallback lives in
+    // the title hover.
+    expect(chip?.textContent ?? "").toMatch(/CH_QUERY_LIMIT_CEILING/);
+    expect(chip?.textContent ?? "").not.toMatch(/VITE_CH_QUERY_LIMIT_CEILING/);
+  });
+
+  it("renders the truncation chip in the EMPTY-state path too — the diagnostic case the chip exists to surface", () => {
+    // Regression: /code-review round-2 P2 2026-05-30. The empty-state
+    // early-return previously hid the chip in the very situation that
+    // most needs it: CH returns 50k rows but none have a usable
+    // SessionId so groupSpans collapses to zero sessions; truncated=true
+    // but sidebar would short-circuit to "// awaiting" with zero signal
+    // that the cap was hit.
+    const { container } = render(
+      <SessionSidebar
+        sessions={[]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        nowMs={Date.now()}
+        emptyMessage="// no sessions"
+        truncated={true}
+      />,
+    );
+    const chip = container.querySelector('[data-truncation-chip="true"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent ?? "").toMatch(/CH_QUERY_LIMIT_CEILING/);
   });
 
   it("does NOT render the truncation chip when truncated is false or omitted", () => {

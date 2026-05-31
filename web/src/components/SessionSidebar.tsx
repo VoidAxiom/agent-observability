@@ -39,6 +39,15 @@ interface ServiceBucket {
   sessions: SessionGroup[];
 }
 
+// Lead with the repo-standard CH_* primary (matches .env.example,
+// migrate.sh, docker-compose, Swift app). VITE_* is the web-only
+// fallback per loadQueryConfigFromEnv — mention it in the title hover
+// so the operator knows both work.
+const TRUNCATION_CHIP_TEXT =
+  "// window truncated · raise CH_QUERY_LIMIT_CEILING";
+const TRUNCATION_TITLE =
+  "ClickHouse returned the row-count safety ceiling; older spans within the configured time window were dropped. Raise CH_QUERY_LIMIT_CEILING (or VITE_CH_QUERY_LIMIT_CEILING as a web-only fallback), or shorten CH_QUERY_WINDOW_HOURS.";
+
 function bucketByService(sessions: SessionGroup[]): ServiceBucket[] {
   const order: string[] = [];
   const buckets = new Map<string, SessionGroup[]>();
@@ -89,6 +98,21 @@ export function SessionSidebar({
   if (sessions.length === 0) {
     return (
       <aside aria-label="Sessions" style={emptyStateStyle}>
+        {truncated ? (
+          // Diagnostic hole if omitted: codex P2 round-2 2026-05-30. The
+          // empty-state path is REACHABLE while truncated=true — e.g. CH
+          // returns 50k rows but every span lacks a SessionId so groupSpans
+          // collapses to zero sessions. The very situation that most needs
+          // the chip would otherwise hide it.
+          <p
+            role="status"
+            data-truncation-chip="true"
+            style={truncationChipStyle}
+            title={TRUNCATION_TITLE}
+          >
+            {TRUNCATION_CHIP_TEXT}
+          </p>
+        ) : null}
         <p style={emptyStateTextStyle}>
           {emptyMessage ?? "// awaiting spans from ClickHouse..."}
         </p>
@@ -112,9 +136,9 @@ export function SessionSidebar({
           role="status"
           data-truncation-chip="true"
           style={truncationChipStyle}
-          title="ClickHouse returned the maximum row count; older spans within the configured time window were dropped. Raise VITE_CH_QUERY_LIMIT_CEILING or shorten VITE_CH_QUERY_WINDOW_HOURS."
+          title={TRUNCATION_TITLE}
         >
-          {"// window truncated · raise VITE_CH_QUERY_LIMIT_CEILING"}
+          {TRUNCATION_CHIP_TEXT}
         </p>
       ) : null}
       {buckets.map((bucket) => (
