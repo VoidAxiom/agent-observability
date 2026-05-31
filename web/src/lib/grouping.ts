@@ -428,10 +428,24 @@ function buildDispatchAgentIdMap(
 ): Map<string, DispatchInfo> {
   const out = new Map<string, DispatchInfo>();
   // Build a per-trace child index so descendant walks are O(children).
+  // Sort each parent's children by Timestamp ONCE here (with insertion-
+  // order tie-break) so the BFS walker reads a pre-sorted list and
+  // doesn't re-sort on every dequeue — Claude /code-review round-2 P3 #3,
+  // 2026-05-31.
   const childrenByParent = new Map<string, SpanRow[]>();
   for (const row of sessionRows) {
     const parentKey = globalSpanIdFor(row.TraceId, row.ParentSpanId);
     pushBucket(childrenByParent, parentKey, row);
+  }
+  for (const [key, bucket] of childrenByParent) {
+    const sorted = bucket
+      .map((row, offset) => ({ row, offset }))
+      .sort((a, b) => {
+        if (a.row.Timestamp === b.row.Timestamp) return a.offset - b.offset;
+        return a.row.Timestamp < b.row.Timestamp ? -1 : 1;
+      })
+      .map((entry) => entry.row);
+    childrenByParent.set(key, sorted);
   }
 
   for (const dispatchSpan of sessionRows) {
@@ -468,18 +482,12 @@ function findFirstDescendantAgentId(
       const candidate = node.SpanAttributesRaw["agent_id"] ?? "";
       if (candidate !== "") return candidate;
     }
+    // childrenByParent is pre-sorted by Timestamp at construction time
+    // (buildDispatchAgentIdMap), so we can enqueue directly without
+    // re-sorting per dequeue.
     const children = childrenByParent.get(key);
     if (children) {
-      // Sort children by Timestamp so "first descendant" is deterministic
-      // across input shuffles. Insertion-order tie-break preserved.
-      const ordered = [...children]
-        .map((row, offset) => ({ row, offset }))
-        .sort((a, b) => {
-          if (a.row.Timestamp === b.row.Timestamp) return a.offset - b.offset;
-          return a.row.Timestamp < b.row.Timestamp ? -1 : 1;
-        })
-        .map((entry) => entry.row);
-      for (const child of ordered) queue.push(child);
+      for (const child of children) queue.push(child);
     }
   }
   return null;
@@ -605,10 +613,16 @@ function buildLegacyNodes(rows: SpanRow[]): SessionNode[] {
     // CSS/tooltips don't break.
     const kind: SessionKind =
       bucketRows[0]?.ServiceName === CODEX_SERVICE ? "codex" : "claude";
+    // Prefix the id with "legacy::" so an agent-obs-sdk smoke span (or
+    // any non-claude-code service span) whose SpanAttributes['session.id']
+    // happens to equal an in-window claude session id can't collide with
+    // the real claude root node. Subagent + codex nodes already namespace
+    // their ids ("sess::subagent::…", "codex::…"); same discipline for
+    // legacy nodes — Claude /code-review round-2 P2 #2, 2026-05-31.
     nodes.push(
       makeSessionNode({
         kind,
-        id: key,
+        id: `legacy::${key}`,
         sessionKey: key,
         parentId: null,
         spans: bucketRows,

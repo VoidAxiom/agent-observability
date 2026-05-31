@@ -262,43 +262,61 @@ function Shell() {
   // VOI-386: prune expandedNodeIds against ALL live node ids in the
   // forest (not just visibleSessions — switching tabs shouldn't drop
   // state for a node visible in History but hidden in Live).
-  useEffect(() => {
-    // ALWAYS run the prune (even when expandedNodeIds.size === 0) so we
-    // also prune autoExpandedSeenRef. Without that, a long-running tab
-    // accumulates aged-out root ids forever AND a re-emitted root id (a
-    // session resurfacing after a fixture replay or a CH window shift)
-    // would silently skip auto-expand because seen.has(id) is still true.
-    // Claude /code-review P2 #4, 2026-05-31.
+  // Compose the live-id set once per `sessions` reference and reuse it
+  // in BOTH the auto-expanded-seen prune (sessions-driven) and the
+  // expandedNodeIds-stale check (also sessions-driven). The earlier
+  // single-effect version listed expandedNodeIds in deps, so every
+  // chevron click forced a full-forest walk + Set rebuild even when
+  // sessions hadn't changed — wasted O(N) work on every interaction.
+  // Split per Claude /code-review round-2 P3 #1, 2026-05-31.
+  const liveNodeIds = useMemo(() => {
     const live = new Set<string>();
     forEachNode(sessions, (node) => live.add(node.id));
+    return live;
+  }, [sessions]);
 
-    // Prune the auto-expanded-seen tracking against live ids.
+  // Prune the auto-expanded-seen tracking against live ids. Sessions-only
+  // dep — auto-expand bookkeeping is independent of user toggles.
+  useEffect(() => {
     const seen = autoExpandedSeenRef.current;
-    if (seen.size > 0) {
-      const pruned = new Set<string>();
-      for (const id of seen) {
-        if (live.has(id)) pruned.add(id);
-      }
-      autoExpandedSeenRef.current = pruned;
-    }
-
-    if (expandedNodeIds.size === 0) return;
+    if (seen.size === 0) return;
     let stale = false;
-    for (const id of expandedNodeIds) {
-      if (!live.has(id)) {
+    for (const id of seen) {
+      if (!liveNodeIds.has(id)) {
         stale = true;
         break;
       }
     }
     if (!stale) return;
+    const pruned = new Set<string>();
+    for (const id of seen) {
+      if (liveNodeIds.has(id)) pruned.add(id);
+    }
+    autoExpandedSeenRef.current = pruned;
+  }, [liveNodeIds]);
+
+  // Prune expandedNodeIds against live ids. Sessions-only dep — a chevron
+  // click can never make an id stale (it just toggles membership), so
+  // listing expandedNodeIds in deps would trigger needless full-forest
+  // walks on every interaction.
+  useEffect(() => {
     setExpandedNodeIds((prev) => {
+      if (prev.size === 0) return prev;
+      let stale = false;
+      for (const id of prev) {
+        if (!liveNodeIds.has(id)) {
+          stale = true;
+          break;
+        }
+      }
+      if (!stale) return prev;
       const next = new Set<string>();
       for (const id of prev) {
-        if (live.has(id)) next.add(id);
+        if (liveNodeIds.has(id)) next.add(id);
       }
       return next;
     });
-  }, [sessions, expandedNodeIds]);
+  }, [liveNodeIds]);
 
   const onSelectSession = useCallback(
     (id: string) => {

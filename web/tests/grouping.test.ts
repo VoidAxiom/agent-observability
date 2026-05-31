@@ -220,6 +220,12 @@ describe("computeTreeOrder", () => {
 });
 
 describe("groupSpans", () => {
+  // VOI-386 round-3 fix: legacy nodes (un-stamped codex, agent-obs-sdk
+  // smoke spans, claude-code without a SessionId) now carry a `legacy::`
+  // prefix on their id to avoid colliding with claude-rooted ids that
+  // happen to equal the underlying session key. `sessionKey` is still
+  // the user-meaningful identifier (no prefix), so the display label
+  // and tooltips read the same as before.
   it("groupSpansPrefersNativeSessionIdOverAgentSessionId", () => {
     const sessions = groupSpans([
       span({
@@ -230,7 +236,8 @@ describe("groupSpans", () => {
         projectName: "project-name",
       }),
     ]);
-    expect(sessions.map((s) => s.id)).toEqual(["span-1"]);
+    expect(sessions.map((s) => s.sessionKey)).toEqual(["span-1"]);
+    expect(sessions.map((s) => s.id)).toEqual(["legacy::span-1"]);
     expect(sessions[0]?.displayLabel).toBe("project-name · span-1");
   });
 
@@ -243,7 +250,8 @@ describe("groupSpans", () => {
         sessionId: "",
       }),
     ]);
-    expect(sessions.map((s) => s.id)).toEqual(["agent-1"]);
+    expect(sessions.map((s) => s.sessionKey)).toEqual(["agent-1"]);
+    expect(sessions.map((s) => s.id)).toEqual(["legacy::agent-1"]);
   });
 
   it("fallsBackToTraceIdWhenSessionAndAgentSessionAreMissing", () => {
@@ -265,9 +273,43 @@ describe("groupSpans", () => {
         sessionId: "",
       }),
     ]);
-    expect(new Set(sessions.map((s) => s.id))).toEqual(
+    expect(new Set(sessions.map((s) => s.sessionKey))).toEqual(
       new Set(["trace-fallback", "trace-run"]),
     );
+    expect(new Set(sessions.map((s) => s.id))).toEqual(
+      new Set(["legacy::trace-fallback", "legacy::trace-run"]),
+    );
+  });
+
+  it("legacy node id is prefixed so it cannot collide with a claude root id (round-3 fix)", () => {
+    // Setup: a real claude session with SessionId="abc123" AND a
+    // non-claude-code span whose SpanAttributes['session.id'] also
+    // equals "abc123". Without the legacy:: prefix, both nodes would
+    // carry id="abc123" and findNodeById would non-deterministically
+    // select whichever LIFO traversal happened to encounter first.
+    const forest = groupSpansToTree([
+      claudeSpan({
+        sessionId: "abc123",
+        spanId: "claude-root",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      span({
+        traceId: "smoke-trace",
+        spanId: "smoke-root",
+        timestamp: "2026-01-01T00:00:02.000000000",
+        serviceName: "agent-obs-sdk",
+        sessionId: "abc123",
+      }),
+    ]);
+    const ids = forest.map((n) => n.id).sort();
+    expect(ids).toContain("abc123");
+    expect(ids).toContain("legacy::abc123");
+    // Distinct nodes, distinct kinds.
+    const claudeNode = forest.find((n) => n.id === "abc123");
+    const legacyNode = forest.find((n) => n.id === "legacy::abc123");
+    expect(claudeNode?.kind).toBe("claude");
+    expect(legacyNode?.kind).toBe("claude"); // agent-obs-sdk → claude fallback per buildLegacyNodes
+    expect(legacyNode?.sessionKey).toBe("abc123");
   });
 
   it("lastActivityUsesSpanEndTimeNotStartTime", () => {
