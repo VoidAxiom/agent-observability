@@ -386,14 +386,23 @@ function buildClaudeNode(
     outerAgentId: string;
     node: SessionNode;
   }
-  // Per-session SpanId → row index used to derive outerAgentId via the
-  // span tree when dispatch info is absent (codex P2 round-4 2026-05-31).
-  // Scoped to sessionRows so cross-session SpanId collisions cannot
-  // misdirect the walk.
-  const spanBySpanInSession = new Map<string, SpanRow>();
+  // Per-session (TraceId, SpanId) → row index used to derive outerAgentId
+  // via the span tree when dispatch info is absent (codex P2 round-4
+  // 2026-05-31). ParentSpanId is trace-local, so the walk must be
+  // trace-scoped — a session can carry multiple traces with colliding
+  // SpanIds (fixture replays, idempotent ingestion) and a SpanId-only
+  // map would route the walk into the wrong trace and return the wrong
+  // outerAgentId (codex P2 round-5 2026-05-31). Keying by
+  // (TraceId, SpanId) makes cross-trace collisions physically
+  // unreachable, mirroring the (sessionId, spanId) discipline applied
+  // to the codex parent walker in round-2.
+  const spanByTraceSpanInSession = new Map<string, SpanRow>();
+  const traceSpanKey = (traceId: string, spanId: string): string =>
+    `${traceId}::${spanId}`;
   for (const row of sessionRows) {
-    if (!spanBySpanInSession.has(row.SpanId)) {
-      spanBySpanInSession.set(row.SpanId, row);
+    const key = traceSpanKey(row.TraceId, row.SpanId);
+    if (!spanByTraceSpanInSession.has(key)) {
+      spanByTraceSpanInSession.set(key, row);
     }
   }
 
@@ -408,7 +417,12 @@ function buildClaudeNode(
     // root even though the span tree still preserves the linkage.
     const outerAgentId =
       info?.outerAgentId ??
-      deriveOuterAgentIdFromSpanTree(agentSpans, agentId, spanBySpanInSession);
+      deriveOuterAgentIdFromSpanTree(
+        agentSpans,
+        agentId,
+        spanByTraceSpanInSession,
+        traceSpanKey,
+      );
     const subagentId = `${sessionId}::subagent::${agentId}`;
     const subagentNode = makeSessionNode({
       kind: "subagent",
@@ -547,21 +561,30 @@ function findFirstDescendantAgentId(
  * claude → outer subagent → inner subagent linkage when the outer's
  * dispatch span has aged out — the span-tree linkage survives the
  * window edge even when the dispatch metadata doesn't.
+ *
+ * Codex P2 round-5 2026-05-31: lookup keyed by (TraceId, SpanId) because
+ * ParentSpanId is trace-local — colliding SpanIds across multiple
+ * traces in the SAME session (fixture replays, idempotent ingestion)
+ * would otherwise misdirect the walk into an unrelated trace. The
+ * anchor's TraceId scopes the entire walk.
  */
 function deriveOuterAgentIdFromSpanTree(
   bucketSpans: SpanRow[],
   bucketAgentId: string,
-  spanBySpanInSession: Map<string, SpanRow>,
+  spanByTraceSpanInSession: Map<string, SpanRow>,
+  traceSpanKey: (traceId: string, spanId: string) => string,
 ): string {
   // Use the first span as the walk anchor — all spans in the bucket share
   // the same agent_id by construction, so any one of them gives the same
-  // outer agent_id answer.
+  // outer agent_id answer. The anchor's TraceId scopes the walk so the
+  // ancestor lookup stays within the same trace.
   const start = bucketSpans[0];
   if (!start) return "";
+  const traceId = start.TraceId;
   const visited = new Set<string>();
   let cursor = start.ParentSpanId;
   let depth = 0;
-  const maxDepth = Math.min(1000, spanBySpanInSession.size);
+  const maxDepth = Math.min(1000, spanByTraceSpanInSession.size);
   while (
     cursor !== "" &&
     cursor !== "0000000000000000" &&
@@ -569,7 +592,7 @@ function deriveOuterAgentIdFromSpanTree(
   ) {
     if (visited.has(cursor)) return "";
     visited.add(cursor);
-    const row = spanBySpanInSession.get(cursor);
+    const row = spanByTraceSpanInSession.get(traceSpanKey(traceId, cursor));
     if (!row) return "";
     const ancestorAgentId = row.SpanAttributesRaw["agent_id"] ?? "";
     if (ancestorAgentId !== "" && ancestorAgentId !== bucketAgentId) {

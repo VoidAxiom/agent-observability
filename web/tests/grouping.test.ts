@@ -480,11 +480,16 @@ interface ClaudeSpanOverrides {
   agentId?: string;
   subagentType?: string;
   spanName?: string;
+  /** Override TraceId when a test needs multiple traces in the same session
+   *  (e.g. cross-trace SpanId-collision regression). Defaults to a
+   *  per-session label so legacy tests with one trace per session keep
+   *  working. */
+  traceId?: string;
 }
 
 function claudeSpan(o: ClaudeSpanOverrides): SpanRow {
   return span({
-    traceId: `claude-trace-${o.sessionId}`,
+    traceId: o.traceId ?? `claude-trace-${o.sessionId}`,
     spanId: o.spanId,
     parentSpanId: o.parentSpanId ?? "",
     spanName: o.spanName ?? "claude_code.tool.bash",
@@ -1213,6 +1218,83 @@ describe("groupSpansToTree (VOI-386)", () => {
       "inner-w-1",
       "inner-w-2",
     ]);
+  });
+
+  it("dispatch-absent outer-walk scoped by TraceId — cross-trace SpanId collision in the same session does NOT misroute the walk (codex P2 round-5 2026-05-31)", () => {
+    // ParentSpanId is trace-local. A session that carries multiple
+    // traces with colliding SpanIds (fixture replay, idempotent
+    // ingestion) must not let the dispatch-absent outer-walk follow
+    // ParentSpanId into the WRONG trace. Fixture: trace-A has a real
+    // outer subagent ancestry for an inner work span; trace-B has a
+    // colliding SpanId ('parent-spot') that — if the walk were
+    // SpanId-only-keyed — would route into a DIFFERENT agent_id than
+    // trace-A's legitimate outer. Round-5 fix keys lookups by
+    // (TraceId, SpanId), so the walk stays on trace-A.
+    const forest = groupSpansToTree([
+      // TRACE A: claude-root → outer-work (agent_id=outer-A) → inner-work.
+      // Dispatch spans for BOTH outer and inner are out of window.
+      claudeSpan({
+        sessionId: "sess-trace-collide",
+        traceId: "trace-A",
+        spanId: "a-root",
+        timestamp: "2026-01-01T00:30:00.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-trace-collide",
+        traceId: "trace-A",
+        // Will collide with trace-B's 'parent-spot' SpanId.
+        spanId: "parent-spot",
+        parentSpanId: "a-root",
+        timestamp: "2026-01-01T00:30:01.000000000",
+        agentId: "outer-A",
+      }),
+      claudeSpan({
+        sessionId: "sess-trace-collide",
+        traceId: "trace-A",
+        spanId: "inner-A-1",
+        parentSpanId: "parent-spot",
+        timestamp: "2026-01-01T00:30:02.000000000",
+        agentId: "inner-A",
+      }),
+      // TRACE B: separate trace in the SAME session. Its 'parent-spot'
+      // SpanId collides with trace-A's outer parent. Note: B is inserted
+      // FIRST in stream order BELOW so first-wins-by-SpanId would hide
+      // trace-A's row behind it.
+      claudeSpan({
+        sessionId: "sess-trace-collide",
+        traceId: "trace-B",
+        spanId: "b-root",
+        timestamp: "2026-01-01T00:31:00.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-trace-collide",
+        traceId: "trace-B",
+        // SAME SpanId as trace-A's outer parent, but different ancestry.
+        spanId: "parent-spot",
+        parentSpanId: "b-root",
+        timestamp: "2026-01-01T00:31:01.000000000",
+        agentId: "OTHER-AGENT",
+      }),
+    ]);
+
+    const root = findRootBySession(forest, "sess-trace-collide");
+    // Two subagents under root: outer-A and OTHER-AGENT (both materialize
+    // via dispatch-absent bucketing). The trace-A inner subagent must
+    // nest under outer-A, NOT under OTHER-AGENT, NOT as a sibling of
+    // either.
+    const outerA = root.children.find((c) => c.displayLabel === "outer-A");
+    expect(outerA).toBeDefined();
+    expect(outerA!.children.length).toBe(1);
+    expect(outerA!.children[0]!.displayLabel).toBe("inner-A");
+    expect(outerA!.children[0]!.parentId).toBe(outerA!.id);
+
+    const otherAgent = root.children.find(
+      (c) => c.displayLabel === "OTHER-AGENT",
+    );
+    expect(otherAgent).toBeDefined();
+    // OTHER-AGENT must NOT have inherited inner-A via the cross-trace
+    // SpanId collision.
+    expect(otherAgent!.children.length).toBe(0);
   });
 
   it("groupSpans alias matches groupSpansToTree output", () => {
