@@ -45,3 +45,6 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Visual brainstorming companion artifacts
+.superpowers/
