@@ -282,25 +282,40 @@ describe("DetailsPane — TRACE mode", () => {
     expect(container.textContent).toContain("errors");
   });
 
-  it("includes an EST/EDT 'started' MiniStat when rootStart is set (VOI-389)", () => {
-    // rootStart = July 15 2026 14:32:47 UTC -> 10:32:47 AM EDT
+  it("includes an EST/EDT 'started' MiniStat derived from span Timestamps (VOI-389)", () => {
+    // VOI-389 round-5 (codex P2): the rendered 'started' value is now
+    // derived from the spans' parseable Timestamps (mirroring
+    // WaterfallShell), NOT from trace.rootStart — the grouping layer
+    // collapses any malformed row to a DISTANT_PAST sentinel that
+    // poisons rootStart for partially-valid traces.
+    // Span Timestamp = July 15 2026 14:32:47 UTC -> 10:32:47 AM EDT
     const t = trace({
       id: "trace-time",
       displayLabel: "trace-time",
       durationSeconds: 1.2,
-      rootStart: Date.UTC(2026, 6, 15, 14, 32, 47),
-      spans: [span({ TraceId: "trace-time", SpanId: "r" })],
+      spans: [
+        span({
+          TraceId: "trace-time",
+          SpanId: "r",
+          Timestamp: "2026-07-15T14:32:47.000000000",
+        }),
+      ],
     });
     const { container } = render(<DetailsPane span={null} trace={t} session={null} nowMs={0} />);
     expect(container.textContent).toContain("started");
     expect(container.textContent).toMatch(/10:32:47 AM EDT/);
   });
 
-  it("renders -- for an unparseable rootStart (DISTANT_PAST sentinel)", () => {
+  it("renders -- when every span Timestamp is unparseable", () => {
     const t = trace({
       id: "trace-no-time",
-      rootStart: -8.64e15,
-      spans: [span({ TraceId: "trace-no-time", SpanId: "r" })],
+      spans: [
+        span({
+          TraceId: "trace-no-time",
+          SpanId: "r",
+          Timestamp: "not-a-timestamp",
+        }),
+      ],
     });
     const { container } = render(<DetailsPane span={null} trace={t} session={null} nowMs={0} />);
     // The started MiniStat exists but its value is the "--" fallback so
@@ -308,6 +323,49 @@ describe("DetailsPane — TRACE mode", () => {
     const startedLabel = Array.from(container.querySelectorAll("span"))
       .find((el) => el.textContent === "// started");
     expect(startedLabel?.previousElementSibling?.textContent).toBe("--");
+  });
+
+  it("uses earliest parseable span Timestamp even if other spans are malformed (codex P2 round-5)", () => {
+    // The exact failure mode codex flagged: trace.rootStart is poisoned
+    // to the DISTANT_PAST sentinel because grouping maps the malformed
+    // child to it and then min()s, but the trace still has valid spans
+    // that the waterfall can render. The 'started' MiniStat must agree
+    // with the waterfall, not with the poisoned rootStart.
+    const t = trace({
+      id: "trace-mixed",
+      // Simulate the poisoned rootStart that grouping would produce.
+      rootStart: -8.64e15,
+      spans: [
+        // Root has a clean parseable Timestamp at 10:32:47 AM EDT.
+        span({
+          TraceId: "trace-mixed",
+          SpanId: "r",
+          Timestamp: "2026-07-15T14:32:47.000000000",
+        }),
+        // Child has a malformed Timestamp — would have pushed
+        // grouping's min() to DISTANT_PAST under the old derivation.
+        span({
+          TraceId: "trace-mixed",
+          SpanId: "c",
+          ParentSpanId: "r",
+          Timestamp: "garbage",
+        }),
+        // Another valid child, slightly later.
+        span({
+          TraceId: "trace-mixed",
+          SpanId: "c2",
+          ParentSpanId: "r",
+          Timestamp: "2026-07-15T14:32:48.000000000",
+        }),
+      ],
+    });
+    const { container } = render(<DetailsPane span={null} trace={t} session={null} nowMs={0} />);
+    // Earliest parseable span = 10:32:47 AM EDT; sentinel-derived
+    // rootStart is ignored.
+    expect(container.textContent).toMatch(/10:32:47 AM EDT/);
+    const startedLabel = Array.from(container.querySelectorAll("span"))
+      .find((el) => el.textContent === "// started");
+    expect(startedLabel?.previousElementSibling?.textContent).not.toBe("--");
   });
 
   it("errorCount uses rowHasError (counts exception.* keys + error attr, not just StatusCode='ERROR')", () => {

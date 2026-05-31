@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Copy } from "lucide-react";
 import type { SessionGroup, SpanRow, TraceGroup } from "../lib/grouping";
-import { rowHasError } from "../lib/grouping";
+import { parseTimestamp, rowHasError } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
 import {
   groupAttributes,
@@ -217,6 +217,26 @@ function TraceDetails({ trace }: TraceDetailsProps) {
   const durationDisplay = formatHeroDurationMs(trace.durationSeconds * 1000);
   const durationExact = `${trace.durationSeconds.toFixed(6)}s`;
 
+  // VOI-389 round-5 (codex P2): trace.rootStart collapses to the
+  // DISTANT_PAST sentinel when ANY span row's Timestamp fails to parse,
+  // because grouping maps malformed rows to DISTANT_PAST and then
+  // min()s across the trace. That meant a partially valid trace with
+  // one bad child timestamp rendered "started --" here even though the
+  // waterfall chip and axis ticks happily showed real EST times derived
+  // from the parseable spans. Mirror WaterfallShell's per-span min-of-
+  // parseable derivation so the MiniStat agrees with the waterfall.
+  // All-unparseable still yields NaN, which formatAbsoluteEst renders
+  // as "--" via its NaN/sentinel fallback.
+  const derivedRootStartMs = useMemo(() => {
+    let min = Number.POSITIVE_INFINITY;
+    for (const s of trace.spans) {
+      const t = parseTimestamp(s.Timestamp);
+      if (t === null) continue;
+      if (t < min) min = t;
+    }
+    return min === Number.POSITIVE_INFINITY ? Number.NaN : min;
+  }, [trace.spans]);
+
   return (
     <section aria-label="Details" style={paneStyle}>
       <header style={headerStyle}>
@@ -244,14 +264,18 @@ function TraceDetails({ trace }: TraceDetailsProps) {
         <MiniStat label="spans" value={String(trace.spanCount)} />
         <MiniStat label="errors" value={String(errorCount)} />
         <MiniStat label="services" value={String(services.length)} />
-        {/* VOI-389: absolute EST wall-clock start. trace.rootStart is the
-            DISTANT_PAST sentinel when every span's Timestamp failed to
-            parse — formatAbsoluteEst() returns "--" in that case rather
-            than rendering a bogus 1970 timestamp. */}
+        {/* VOI-389: absolute EST wall-clock start. Derived from the
+            spans' parseable Timestamps (mirrors WaterfallShell) rather
+            than trace.rootStart, because the grouping layer collapses
+            ANY malformed row to the DISTANT_PAST sentinel and then
+            min()s across the trace — one bad child timestamp would
+            otherwise force this stat to "--" while the waterfall
+            cheerfully shows real EST times. All-unparseable yields NaN
+            here, which the formatter renders as "--". */}
         <MiniStat
           label="started"
-          value={formatAbsoluteEst(trace.rootStart)}
-          title={formatAbsoluteEstWithDate(trace.rootStart)}
+          value={formatAbsoluteEst(derivedRootStartMs)}
+          title={formatAbsoluteEstWithDate(derivedRootStartMs)}
         />
       </div>
 
