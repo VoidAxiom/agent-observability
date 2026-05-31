@@ -60,6 +60,17 @@ function isUsable(ms: number): boolean {
   return Number.isFinite(ms) && ms !== DISTANT_PAST_SENTINEL;
 }
 
+/**
+ * True when the input is a real timestamp the formatter would render
+ * (not NaN/Infinity, not the DISTANT_PAST sentinel). Useful to call
+ * sites that wrap the formatter inside a longer string like
+ * `"<HH:MM:SS EDT> · <Ns ago>"` and need to suppress the relative-age
+ * fragment when the absolute fragment falls back to "--".
+ */
+export function isAbsoluteTimeAvailable(ms: number): boolean {
+  return isUsable(ms);
+}
+
 /** "10:32:47 AM EDT" — for sidebar + DetailsPane last_activity. */
 export function formatAbsoluteEst(msSinceEpoch: number): string {
   if (!isUsable(msSinceEpoch)) return FALLBACK;
@@ -69,24 +80,16 @@ export function formatAbsoluteEst(msSinceEpoch: number): string {
 /**
  * "10:32:47.123 AM EDT" — for waterfall tooltips (sub-second matters).
  *
- * If the runtime ever returns a string without the ".mmm" fragment (older
- * Intl polyfills miss `fractionalSecondDigits`), splice the milliseconds
- * in manually before the AM/PM token so callers can rely on the format.
+ * Node 22 + WebKit-in-Tauri (the only runtimes this project targets per
+ * CLAUDE.md § "Scope: production-realistic") both honour
+ * `fractionalSecondDigits`, so no polyfill defense is needed. The
+ * format-time test asserts the ".mmm" fragment appears so a future
+ * runtime regression lights up immediately rather than silently rendering
+ * second-precision in the waterfall tooltip.
  */
 export function formatAbsoluteEstWithMs(msSinceEpoch: number): string {
   if (!isUsable(msSinceEpoch)) return FALLBACK;
-  const formatted = HMS_MS_FORMATTER.format(new Date(msSinceEpoch));
-  // Defensive fallback for Intl impls that ignore fractionalSecondDigits:
-  // the seconds field is then "47" rather than "47.123". Detect by the
-  // absence of a "." between digits and splice the ms in before the
-  // AM/PM token. Determinism: pure string manipulation; no extra Date math.
-  if (/\d\.\d{3}/.test(formatted)) return formatted;
-  const ms = Math.floor(msSinceEpoch % 1000)
-    .toString()
-    .padStart(3, "0");
-  // Insert ".mmm" after the last seconds digit (look for HH:MM:SS pattern,
-  // capture seconds, splice the fractional after).
-  return formatted.replace(/(\d{1,2}:\d{2}:\d{2})/, `$1.${ms}`);
+  return HMS_MS_FORMATTER.format(new Date(msSinceEpoch));
 }
 
 /** "May 31, 10:32:47 AM EDT" — for context-spanning displays. */

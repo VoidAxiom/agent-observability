@@ -491,10 +491,20 @@ function WaterfallBar({
   // VOI-389: tooltip carries absolute EST/EDT start + end so the operator
   // can correlate a bar's hover position to wall-clock time without
   // popping out to the inspector. The formatter already emits the
-  // " EST"/" EDT" suffix; we don't double-append.
-  const titleText = bar.noTimestamp
-    ? `${label} — no timestamp (rendered as synthetic minimum-width bar)\nstarted --\nended --`
-    : `${label}\nstarted ${formatAbsoluteEstWithMs(bar.startMs)}\nended ${formatAbsoluteEstWithMs(bar.endMs)}`;
+  // " EST"/" EDT" suffix; we don't double-append. For in-flight spans
+  // (StatusCode UNSET, Duration === 0) the "ended" line would equal
+  // the "started" line — a lie the operator would trust because the
+  // bar is animated as running but the hover claims it finished
+  // instantly. Print "(still running)" instead. Claude /code-review
+  // P1 2026-05-31.
+  let titleText: string;
+  if (bar.noTimestamp) {
+    titleText = `${label} — no timestamp (rendered as synthetic minimum-width bar)\nstarted --\nended --`;
+  } else if (bar.isRunning && bar.span.Duration === 0) {
+    titleText = `${label}\nstarted ${formatAbsoluteEstWithMs(bar.startMs)}\nended (still running)`;
+  } else {
+    titleText = `${label}\nstarted ${formatAbsoluteEstWithMs(bar.startMs)}\nended ${formatAbsoluteEstWithMs(bar.endMs)}`;
+  }
   const ariaLabel = bar.noTimestamp
     ? `${bar.span.SpanName} — depth ${bar.span.depth} — no timestamp`
     : `${bar.span.SpanName} — depth ${bar.span.depth}`;
@@ -606,15 +616,19 @@ function TimeAxis({
   // Cap absolute-time labels at ~one per 200px (spec § "Axis ticks") so
   // we never paint overlapping HH:MM:SS strings on narrow viewports.
   const maxAbsoluteLabels = Math.max(3, Math.min(5, Math.ceil(innerWidth / 200)));
-  // Collect ALL majors first, then thin them out to the target count by
-  // keeping evenly-spaced indices. Pure index math — deterministic.
+  // Pick evenly-spaced major-tick indices via floor(i * N / K) — this
+  // distributes K labels across the full N-tick axis. The previous
+  // floor(N/K) stride collapsed to 1 when N was between K+1 and 2K-1
+  // (e.g. innerWidth=1100 → K=5; N=8 → stride=1 → first 5 indices
+  // 0..4 — clustering at the left edge while the right half stays
+  // blank). Codex /code-review P1 2026-05-31.
   const majorTicks = ticks.filter((t) => t.major);
   const absoluteIdxSet = new Set<number>();
   if (showAbsoluteLabels && majorTicks.length > 0) {
-    const stride = Math.max(1, Math.floor(majorTicks.length / maxAbsoluteLabels));
-    for (let i = 0; i < majorTicks.length; i += stride) {
-      absoluteIdxSet.add(majorTicks[i]!.ms);
-      if (absoluteIdxSet.size >= maxAbsoluteLabels) break;
+    const labelCount = Math.min(maxAbsoluteLabels, majorTicks.length);
+    for (let i = 0; i < labelCount; i += 1) {
+      const idx = Math.floor((i * majorTicks.length) / labelCount);
+      absoluteIdxSet.add(majorTicks[idx]!.ms);
     }
   }
 
@@ -643,7 +657,7 @@ function TimeAxis({
             ) : null}
             {showAbsolute ? (
               <text
-                className="voi-waterfall-tick-label voi-waterfall-tick-label--absolute"
+                className="voi-waterfall-tick-label"
                 data-absolute-tick="true"
                 x={x + 2}
                 y={height - 20}

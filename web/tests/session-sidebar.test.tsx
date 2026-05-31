@@ -334,12 +334,42 @@ describe("SessionSidebar", () => {
     // The row meta line carries the absolute clock time.
     const timeMeta = container.querySelector('[data-meta-time="true"]');
     expect(timeMeta?.textContent ?? "").toContain("10:32:47 AM EDT");
-    // The row button's title carries the date+time + relative age so the
-    // operator can correlate across days without losing the relative form.
+    // The row button's data-tooltip carries the date+time + relative age
+    // so the operator can correlate across days without losing the
+    // relative form. We use data-tooltip (the project's CSS-styled
+    // tooltip channel) rather than native title to avoid two-tier
+    // flicker against the inner label span's existing data-tooltip.
     const row = container.querySelector('[data-session-id="abc"]') as HTMLElement;
-    const titleAttr = row.getAttribute("title") ?? "";
-    expect(titleAttr).toMatch(/Jul 15, 10:32:47 AM EDT/);
-    expect(titleAttr).toContain("5s ago");
+    const tooltip = row.getAttribute("data-tooltip") ?? "";
+    expect(tooltip).toMatch(/Jul 15, 10:32:47 AM EDT/);
+    expect(tooltip).toContain("5s ago");
+  });
+
+  it("sentinel-guards lastActivity: DISTANT_PAST renders '--' meta + 'unknown' title (P1 2026-05-31)", () => {
+    // Codex /code-review flagged the leak: session.lastActivity === -8.64e15
+    // makes ageSeconds ~8.64e12 and the title becomes "last_activity --
+    // (8640000000000s ago)". The guard collapses both the meta line's
+    // value and the title to a clean "unknown" string when the time is
+    // not real.
+    const s = makeSession({ id: "stale", serviceName: "claude-code" });
+    s.lastActivity = -8.64e15;
+    const { container } = render(
+      <SessionSidebar
+        sessions={[s]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
+        nowMs={Date.now()}
+      />,
+    );
+    const timeMeta = container.querySelector('[data-meta-time="true"]');
+    expect(timeMeta?.textContent ?? "").toBe("// last --");
+    const row = container.querySelector('[data-session-id="stale"]') as HTMLElement;
+    const tooltip = row.getAttribute("data-tooltip") ?? "";
+    expect(tooltip).toBe("last_activity unknown");
+    // The garbage value MUST NOT appear anywhere in the rendered DOM.
+    expect(container.textContent ?? "").not.toContain("8640000000000");
   });
 
   it("invokes onSelect with the session id when row clicked", () => {

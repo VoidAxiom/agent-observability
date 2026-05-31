@@ -384,6 +384,25 @@ describe("DetailsPane — SESSION mode", () => {
   });
 });
 
+describe("DetailsPane — SESSION mode sentinel guard (VOI-389 P1 follow-up)", () => {
+  it("sentinel-guards lastActivity: DISTANT_PAST renders '--' value + 'unknown' title", () => {
+    // Without the guard, lastActivitySeconds = round((nowMs - -8.64e15)/1000)
+    // ≈ 8.64e12 and the title leaks "-- · 8640000000000s ago". Codex
+    // /code-review P1 2026-05-31.
+    const s = session({
+      id: "session-stale",
+      lastActivity: -8.64e15,
+    });
+    const { container } = render(<DetailsPane span={null} trace={null} session={s} nowMs={Date.now()} />);
+    const lastActivityValue = Array.from(container.querySelectorAll("span"))
+      .find((el) => el.textContent === "// last_activity")
+      ?.parentElement;
+    expect(lastActivityValue?.previousElementSibling?.textContent ?? "").not.toContain("8640000000000");
+    expect(lastActivityValue?.getAttribute("title") ?? "").toBe("last activity unknown");
+    expect(container.textContent ?? "").not.toContain("8640000000000");
+  });
+});
+
 describe("DetailsPane — EMPTY", () => {
   it("renders the placeholder when nothing is selected", () => {
     render(<DetailsPane span={null} trace={null} session={null} nowMs={0} />);

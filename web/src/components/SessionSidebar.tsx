@@ -24,7 +24,11 @@ import {
   type SessionNode,
 } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
-import { formatAbsoluteEst, formatAbsoluteEstWithDate } from "../lib/formatTime";
+import {
+  formatAbsoluteEst,
+  formatAbsoluteEstWithDate,
+  isAbsoluteTimeAvailable,
+} from "../lib/formatTime";
 
 export interface SessionSidebarProps {
   sessions: SessionNode[];
@@ -225,16 +229,24 @@ function SessionRow({
 }: SessionRowProps) {
   const accent = dominantFamilyAccent(node);
   const status = activityStatus(node, nowMs);
-  const lastActivityAgeSeconds = Math.max(
-    0,
-    Math.round((nowMs - node.lastActivity) / 1000),
-  );
   // Absolute EST/EDT clock time of the most recent activity. VOI-389 —
   // the operator asked for wall-clock visibility; the relative-seconds
   // form alone hid which actual minute of the day a session last ran.
   // Falls back to "--" when lastActivity is the DISTANT_PAST sentinel.
   const lastActivityAbs = formatAbsoluteEst(node.lastActivity);
-  const lastActivityTitle = `last_activity ${formatAbsoluteEstWithDate(node.lastActivity)} (${lastActivityAgeSeconds}s ago)`;
+  const hasAbsoluteTime = isAbsoluteTimeAvailable(node.lastActivity);
+  // Sentinel-guard the relative age: without it,
+  //   lastActivity === -8.64e15 → ageSeconds ≈ 8.64e12 → title leaks
+  //   "last_activity -- (8640000000000s ago)".
+  // StatusDot also reads this — pass 0 when the activity is unknown
+  // so its tooltip says "0s ago" rather than the same garbage value.
+  // Claude /code-review P1 2026-05-31.
+  const lastActivityAgeSeconds = hasAbsoluteTime
+    ? Math.max(0, Math.round((nowMs - node.lastActivity) / 1000))
+    : 0;
+  const lastActivityTitle = hasAbsoluteTime
+    ? `last_activity ${formatAbsoluteEstWithDate(node.lastActivity)} (${lastActivityAgeSeconds}s ago)`
+    : "last_activity unknown";
 
   // Per-depth indentation. The wrapper carries the padding so the
   // disclosure triangle's hit target ALSO shifts right with depth —
@@ -319,7 +331,14 @@ function SessionRow({
         data-session-id={node.id}
         data-kind={node.kind}
         data-depth={depth}
-        title={lastActivityTitle}
+        // Use the project's data-tooltip channel rather than a native
+        // `title` — the inner label span already carries
+        // data-tooltip="service.name=…", so a native title here would
+        // produce two-tier flicker (immediate CSS popover on the inner
+        // span + delayed browser tooltip on the outer button). The
+        // structural attribute lets the existing CSS handle both, and
+        // remains discoverable to screen-readers + tests.
+        data-tooltip={lastActivityTitle}
         style={rowStyle}
       >
         {selected ? (

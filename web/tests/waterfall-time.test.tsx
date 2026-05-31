@@ -62,6 +62,36 @@ function smallTrace(): SpanRow[] {
   ]);
 }
 
+/**
+ * In-flight (still-running) span: StatusCode UNSET + Duration === 0.
+ * The Waterfall buildLayout marks this as `isRunning` and animates the
+ * bar with a pulse. The tooltip MUST NOT print
+ * "ended <same as started>" — that's a lie the operator would trust
+ * because the bar is animated as running. Codex /code-review P1.
+ */
+function runningSpan(): SpanRow[] {
+  return [
+    {
+      TraceId: "trace-running",
+      SpanId: "running",
+      ParentSpanId: "",
+      SpanName: "claude_code.tool",
+      Timestamp: new Date(BASE_START_MS).toISOString().replace("Z", "000000Z"),
+      ServiceName: "claude-code",
+      StatusCode: "",
+      Duration: 0,
+      AgentProject: "p",
+      AgentSessionId: "s",
+      AgentRunId: "r",
+      SessionId: "sess",
+      ProjectName: "proj",
+      ResourceAttributesRaw: {},
+      SpanAttributesRaw: {},
+      depth: 0,
+    },
+  ];
+}
+
 describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
   it("per-bar tooltip includes absolute EST start/end times with ms precision", () => {
     const spans = smallTrace();
@@ -104,6 +134,56 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
     const title = rootGroup!.querySelector("title")?.textContent ?? "";
     expect(title).toContain("started --");
     expect(title).toContain("ended --");
+  });
+
+  it("in-flight (running) span tooltip reads 'ended (still running)' instead of duplicating the start time", () => {
+    // Without the running-span branch, bar.endMs === bar.startMs and the
+    // tooltip would render "ended 12:32:47.000 PM EDT" identical to the
+    // started line — a lie the operator would trust because the bar is
+    // animated as running. Codex /code-review P1 2026-05-31.
+    const spans = runningSpan();
+    const { container } = render(
+      <Waterfall
+        spans={spans}
+        selectedSpanId={null}
+        onSelect={() => undefined}
+        nowMs={BASE_START_MS + 5000}
+        widthOverride={1200}
+      />,
+    );
+    const group = container.querySelector('g[data-span-id$="running"]');
+    const title = group?.querySelector("title")?.textContent ?? "";
+    expect(title).toContain("started ");
+    expect(title).toContain("ended (still running)");
+    // The "ended HH:MM:SS.mmm AM/PM EDT" form must NOT appear.
+    expect(title).not.toMatch(/ended \d{1,2}:\d{2}:\d{2}\.\d{3} (AM|PM)/);
+  });
+
+  it("absolute axis labels are evenly spread across the full axis, not clustered at the left", () => {
+    // Regression for codex /code-review P1 2026-05-31: the previous
+    // stride = floor(N/K) collapsed to 1 whenever K < N < 2K, so all K
+    // labels landed in the first K positions and the right half of the
+    // axis stayed unlabelled. The fix uses floor(i*N/K) so the rightmost
+    // label sits on or near the rightmost major tick.
+    const spans = smallTrace();
+    const { container } = render(
+      <Waterfall
+        spans={spans}
+        selectedSpanId={null}
+        onSelect={() => undefined}
+        nowMs={BASE_START_MS + 5000}
+        widthOverride={1200}
+      />,
+    );
+    const ticks = container.querySelectorAll('text[data-absolute-tick="true"]');
+    expect(ticks.length).toBeGreaterThanOrEqual(2);
+    const xs = Array.from(ticks)
+      .map((t) => Number((t as SVGTextElement).getAttribute("x") ?? "0"))
+      .sort((a, b) => a - b);
+    // The rightmost absolute-time label must sit in the right half of
+    // the inner axis (innerWidth = 1200 - 8 = 1192; right half starts
+    // at ~596px). Pre-fix, all labels clustered in the first ~200px.
+    expect(xs[xs.length - 1]).toBeGreaterThan(500);
   });
 
   it("time axis emits at least one absolute EST/EDT tick label", () => {

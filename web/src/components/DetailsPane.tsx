@@ -27,7 +27,11 @@ import {
   type GroupedAttributes,
 } from "../lib/attributeGroups";
 import { formatHeroDurationMs, formatHeroMagnitude } from "../lib/formatHero";
-import { formatAbsoluteEst, formatAbsoluteEstWithDate } from "../lib/formatTime";
+import {
+  formatAbsoluteEst,
+  formatAbsoluteEstWithDate,
+  isAbsoluteTimeAvailable,
+} from "../lib/formatTime";
 import "./DetailsPane.css";
 
 export interface DetailsPaneProps {
@@ -269,15 +273,20 @@ interface SessionDetailsProps {
 
 function SessionDetails({ session, nowMs }: SessionDetailsProps) {
   const cyan = "var(--accent-3)";
-  const lastActivitySeconds = Math.max(
-    0,
-    Math.round((nowMs - session.lastActivity) / 1000),
-  );
   // VOI-389: prefer absolute EST wall-clock for the visible value; keep
   // the relative-seconds form in the hover title so operators correlating
-  // against logs still get the secondary signal.
+  // against logs still get the secondary signal. Guard against the
+  // DISTANT_PAST sentinel — without this, lastActivitySeconds is ~8.64e12
+  // and the title leaks "-- · 8640000000000s ago" (Claude /code-review
+  // P1 2026-05-31).
   const lastActivityAbs = formatAbsoluteEst(session.lastActivity);
-  const lastActivityTitle = `${formatAbsoluteEstWithDate(session.lastActivity)} · ${lastActivitySeconds}s ago`;
+  const hasAbsoluteTime = isAbsoluteTimeAvailable(session.lastActivity);
+  const lastActivitySeconds = hasAbsoluteTime
+    ? Math.max(0, Math.round((nowMs - session.lastActivity) / 1000))
+    : null;
+  const lastActivityTitle = hasAbsoluteTime
+    ? `${formatAbsoluteEstWithDate(session.lastActivity)} · ${lastActivitySeconds}s ago`
+    : "last activity unknown";
 
   const heroDisplay = formatHeroMagnitude(session.spanCount);
   const heroExact = session.spanCount.toLocaleString("en-US");
