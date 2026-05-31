@@ -412,7 +412,7 @@ export function decodeRows(text: string): SpanRow[] {
  * ceiling" robustly: a single malformed JSONEachRow line must not flip
  * the truncation chip off when CH actually returned limitCeiling rows.
  * Folded into the decoder so the full text isn't scanned twice per poll
- * (default ceiling is 50k rows; a multi-MB payload every 5s is enough
+ * (default ceiling is 250k rows; a multi-MB payload every 5s is enough
  * that doing the same line-split twice adds up).
  */
 export function decodeRowsWithCount(text: string): {

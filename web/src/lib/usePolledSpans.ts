@@ -39,7 +39,8 @@ export interface PolledSpansState {
   loading: boolean;
   /**
    * True iff the most recent poll's row count hit the safety ceiling
-   * (VITE_CH_QUERY_LIMIT_CEILING — default 50k). The SessionSidebar shows
+   * (CH_QUERY_LIMIT_CEILING / VITE_CH_QUERY_LIMIT_CEILING — default 250k).
+   * The SessionSidebar shows
    * a "// window truncated" chip when this is true so the operator knows
    * the visible session list might be missing older sessions whose latest
    * activity fell outside the visible-rows window. VOI-382.
