@@ -391,6 +391,28 @@ describe("fetchOnce SQL-construction boundary validation", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("rejects a windowHours above MAX_WINDOW_HOURS (symmetric env-typo guard to MAX_LIMIT_CEILING)", async () => {
+    // Regression: /code-review round-6 P3 2026-05-30. windowHours typo
+    // like CH_QUERY_WINDOW_HOURS=8760000 (meant 8760, ~1y) would
+    // otherwise produce `INTERVAL 8760000 HOUR` (~1000 years) →
+    // full-table scan timeout → generic CH 500 with no env-var hint.
+    const fetchImpl = vi.fn();
+    const cfg = {
+      host: "localhost",
+      port: 8123,
+      database: "default",
+      username: "default",
+      password: "",
+    };
+    await expect(
+      fetchOnce(cfg, fetchImpl as unknown as typeof fetch, {
+        windowHours: 8_760_000,
+        limitCeiling: 100,
+      }),
+    ).rejects.toThrow(ClickHouseError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("rejects a limitCeiling above MAX_LIMIT_CEILING (so env typos like 1e21 surface as a named error, not a generic CH 500)", async () => {
     // Regression: /code-review round-5 P2 2026-05-30. Number.isInteger
     // returns true up to ~1e21, but Number.prototype.toString switches

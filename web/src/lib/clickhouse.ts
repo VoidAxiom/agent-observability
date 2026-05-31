@@ -24,7 +24,7 @@ function buildSelect(windowHours: number, limitCeiling: number): string {
   // could pass 1.5, NaN, Infinity, or 0 and produce malformed SQL like
   // `INTERVAL NaN HOUR` or `LIMIT 1.5`. The discipline lives where the
   // value is consumed.
-  assertPositiveInt(windowHours, "windowHours");
+  assertPositiveInt(windowHours, "windowHours", MAX_WINDOW_HOURS);
   assertPositiveInt(limitCeiling, "limitCeiling", MAX_LIMIT_CEILING);
   // Query LIMIT is ceiling+1 so the (rawRowCount > ceiling) test in
   // fetchOnce can distinguish "happened to grab exactly ceiling rows
@@ -92,6 +92,12 @@ const DEFAULT_LIMIT_CEILING = 50_000;
 // real cap is operator-judgement-driven; 10M is high enough that anyone
 // hitting it is mis-using the knob.
 const MAX_LIMIT_CEILING = 10_000_000;
+// One year of scrollback is well past any realistic dev use; a value
+// like CH_QUERY_WINDOW_HOURS=8760000 (typo on 8760) would otherwise
+// produce `INTERVAL 8760000 HOUR` (~1000 years), causing CH to do a
+// full-table scan and fail as a generic 500 with no env-var hint.
+// Symmetric to MAX_LIMIT_CEILING — codex P3 round-6 2026-05-30.
+const MAX_WINDOW_HOURS = 24 * 365;
 
 function assertPositiveInt(
   n: number,
@@ -417,24 +423,17 @@ export class ClickHouseError extends Error {
 }
 
 /**
- * Decode a JSONEachRow-style payload. Tolerant of both:
+ * Decode a JSONEachRow-style payload. Tolerant of:
  *   - one JSON-array containing the rows (`[ {..}, {..} ]`)
  *   - JSONEachRow proper (one object per line)
  *   - a single top-level object (pretty-printed single-row fixture)
- */
-export function decodeRows(text: string): SpanRow[] {
-  return decodeRowsWithCount(text).rows;
-}
-
-/**
- * Same as decodeRows but ALSO reports the raw row count CH sent — i.e.
- * the number of row UNITS in the payload before coercion drops any that
- * fail to parse. Used by fetchOnce to detect "result hit the safety
- * ceiling" robustly: a single malformed JSONEachRow line must not flip
- * the truncation chip off when CH actually returned limitCeiling rows.
- * Folded into the decoder so the full text isn't scanned twice per poll
- * (default ceiling is 50k rows; a multi-MB payload every 5s is enough
- * that doing the same line-split twice adds up).
+ *
+ * Returns rows AND the raw row count CH sent — i.e. the number of row
+ * UNITS in the payload before coercion drops any that fail to parse.
+ * fetchOnce uses rawRowCount (not rows.length) to detect "result hit
+ * the safety ceiling", so a single malformed JSONEachRow line cannot
+ * flip the truncation chip off when CH actually returned > limitCeiling
+ * rows.
  */
 export function decodeRowsWithCount(text: string): {
   rows: SpanRow[];
