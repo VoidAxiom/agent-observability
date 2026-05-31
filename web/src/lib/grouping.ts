@@ -296,39 +296,94 @@ export function findNodeById(
   return null;
 }
 
+/**
+ * Validate a selection (session, trace, span) against the current forest
+ * WITHOUT materializing forest-wide id Sets. Implemented as a chain:
+ *   1. session id → `findNodeById` (DFS, early-exit) → null or node.
+ *   2. trace id → walk `session` + descendants, early-exit on the first
+ *      `traces.some(t => t.id === traceId)`.
+ *   3. span id → check the matched trace's spans only.
+ *
+ * Cost: O(visible-subtree-nodes + selected-trace-spans), NOT
+ * O(all-spans-in-window). The previous Set-materialization implementation
+ * `add()`ed every span in the window on every invocation; on the operator's
+ * 350k-span 6h window it produced a 1-2s click-to-paint lag (VOI-388).
+ *
+ * Behavior contract — equivalent to the pre-VOI-388 forest-wide-Set impl
+ * on every state REACHABLE via App.tsx's reconcile useEffect normalization,
+ * NOT bit-for-bit identical in isolation. The narrowing relative to the
+ * old impl is deliberate:
+ * - `selectedTraceId`: old validated against a forest-wide traceId Set;
+ *   new validates against the selected session's SUBTREE only. Both
+ *   produce the same result when the (session, trace) pair was assembled
+ *   by a previous reconcile/click — App.tsx never carries a trace from a
+ *   different session's subtree across a selection change. Selected
+ *   session OR ANY DESCENDANT NODE owning a trace with that id validates;
+ *   this is why we walk the subtree, not just `session.traces`.
+ * - `selectedSpanId`: old validated against a forest-wide spanId Set; new
+ *   validates against the MATCHED trace's spans only. Same reachability
+ *   argument: App.tsx never carries a span from a different trace's
+ *   subtree across a selection change. The
+ *   `selection-flow.test.tsx` behavioral oracle proves the public-facing
+ *   UI behavior is unchanged; `grouping-perf.test.ts` documents the
+ *   unreachable corner where the two impls' raw outputs differ.
+ * - Null/undefined inputs → null in output (unchanged).
+ * - Empty forest → all null (unchanged).
+ * - The Selection field's nulling cascade (if session went null, also
+ *   null trace+span) is App.tsx's job, not this function's (unchanged).
+ */
 export function reconcileSelection(
   sessions: SessionNode[],
   selectedSessionId: string | null | undefined,
   selectedTraceId: string | null | undefined,
   selectedSpanId: string | null | undefined,
 ): Selection {
-  // Walk the entire forest so a selected subagent / codex node (nested
-  // child) is preserved, not nulled because it isn't a top-level root.
-  const sessionIds = new Set<string>();
-  const traceIds = new Set<string>();
-  const spanIds = new Set<string>();
-  const visit = (node: SessionNode): void => {
-    sessionIds.add(node.id);
-    for (const t of node.traces) {
-      traceIds.add(t.id);
-      for (const s of t.spans) spanIds.add(spanRowId(s));
-    }
-    for (const c of node.children) visit(c);
-  };
-  for (const s of sessions) visit(s);
-
+  const session = selectedSessionId
+    ? findNodeById(sessions, selectedSessionId)
+    : null;
+  const trace =
+    session && selectedTraceId
+      ? findTraceInSubtree(session, selectedTraceId)
+      : null;
+  const span =
+    trace && selectedSpanId
+      ? trace.spans.some((s) => spanRowId(s) === selectedSpanId)
+        ? selectedSpanId
+        : null
+      : null;
   return {
-    selectedSessionId:
-      selectedSessionId && sessionIds.has(selectedSessionId)
-        ? selectedSessionId
-        : null,
-    selectedTraceId:
-      selectedTraceId && traceIds.has(selectedTraceId)
-        ? selectedTraceId
-        : null,
-    selectedSpanId:
-      selectedSpanId && spanIds.has(selectedSpanId) ? selectedSpanId : null,
+    selectedSessionId: session?.id ?? null,
+    selectedTraceId: trace?.id ?? null,
+    selectedSpanId: span,
   };
+}
+
+/**
+ * Find a trace by id anywhere in `root`'s subtree (root + descendants).
+ * Iterative stack walk so a pathological forest can't blow the JS call
+ * stack; cycle-safe via visited Set keyed by node.id, matching
+ * `findNodeById`'s discipline (children should never cycle, but the
+ * guard cheaply removes a footgun for hand-rolled fixtures). Returns
+ * the matched TraceGroup or null. Early-exits on the first hit.
+ *
+ * Private helper — not exported. Callers should use `reconcileSelection`.
+ */
+function findTraceInSubtree(
+  root: SessionNode,
+  traceId: string,
+): TraceGroup | null {
+  const visited = new Set<string>();
+  const stack: SessionNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (visited.has(node.id)) continue;
+    visited.add(node.id);
+    for (const t of node.traces) {
+      if (t.id === traceId) return t;
+    }
+    for (const child of node.children) stack.push(child);
+  }
+  return null;
 }
 
 export function spanRowId(row: SpanRow): string {
