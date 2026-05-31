@@ -95,6 +95,25 @@ export function SessionSidebar({
 }: SessionSidebarProps) {
   const buckets = useMemo(() => bucketByService(sessions), [sessions]);
 
+  // Chip is rendered at a single position in BOTH branches via the
+  // same JSX node with a stable React `key` so the DOM node is
+  // preserved across the empty → populated transition. role="status"
+  // is an implicit aria-live="polite" region; without the stable
+  // identity, assistive tech would re-announce the same text every
+  // time `sessions` transitions from [] → [...] while truncated stays
+  // true. Codex P2 round-4 2026-05-30.
+  const chip = truncated ? (
+    <p
+      key="truncation-chip"
+      role="status"
+      data-truncation-chip="true"
+      style={truncationChipStyle}
+      title={TRUNCATION_TITLE}
+    >
+      {TRUNCATION_CHIP_TEXT}
+    </p>
+  ) : null;
+
   if (sessions.length === 0) {
     // When the chip is shown we use the stacked-from-top layout (chip
     // at top, message below it) so the chip reads as a header banner.
@@ -106,24 +125,7 @@ export function SessionSidebar({
         aria-label="Sessions"
         style={truncated ? emptyStateWithChipStyle : emptyStateStyle}
       >
-        {truncated ? (
-          // Diagnostic hole if omitted: codex P2 round-2 2026-05-30. The
-          // empty-state path is REACHABLE while truncated=true — e.g. CH
-          // returns 50k rows but every span lacks a SessionId so groupSpans
-          // collapses to zero sessions. The very situation that most needs
-          // the chip would otherwise hide it.
-          // The container uses flexDirection:column so the chip and message
-          // STACK vertically (codex P2 round-3 2026-05-30 — the prior row-
-          // default crowded them side-by-side).
-          <p
-            role="status"
-            data-truncation-chip="true"
-            style={truncationChipStyle}
-            title={TRUNCATION_TITLE}
-          >
-            {TRUNCATION_CHIP_TEXT}
-          </p>
-        ) : null}
+        {chip}
         <p style={emptyStateTextStyle}>
           {emptyMessage ?? "// awaiting spans from ClickHouse..."}
         </p>
@@ -142,16 +144,7 @@ export function SessionSidebar({
         </h2>
         <span style={paneHeaderHintStyle}>{`// ${sessions.length}`}</span>
       </header>
-      {truncated ? (
-        <p
-          role="status"
-          data-truncation-chip="true"
-          style={truncationChipStyle}
-          title={TRUNCATION_TITLE}
-        >
-          {TRUNCATION_CHIP_TEXT}
-        </p>
-      ) : null}
+      {chip}
       {buckets.map((bucket) => (
         <section key={bucket.serviceName} style={bucketStyle}>
           <h3 style={bucketHeaderStyle}>{bucket.serviceName}</h3>

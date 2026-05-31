@@ -287,10 +287,12 @@ describe("usePolledSpans", () => {
       const fetchImpl = vi.fn(async () => {
         callIdx += 1;
         if (callIdx === 1) {
+          // rawRowCount > ceiling per the probe-row pattern (fetchOnce
+          // queries ceiling+1 rows; truncated=true iff CH returned > ceiling).
           return {
             rows: [row("a", "session-a")],
             truncated: true,
-            rawRowCount: 50_000,
+            rawRowCount: 250_001,
           };
         }
         return {
@@ -321,7 +323,7 @@ describe("usePolledSpans", () => {
       // Warn cites the RAW row count (the count truncated was decided
       // from), not rows.length. Codex P2 round-3 2026-05-30.
       const warnText = warnSpy.mock.calls[0]?.[0] as string;
-      expect(warnText).toContain("50000 raw rows");
+      expect(warnText).toContain("250001 raw rows");
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60);

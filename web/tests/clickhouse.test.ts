@@ -271,10 +271,16 @@ describe("buildRequestUrl", () => {
 });
 
 describe("loadQueryConfigFromEnv", () => {
-  it("returns defaults when no env vars are set (1h window, 50k ceiling)", () => {
+  it("returns defaults when no env vars are set (1h window, 250k ceiling — chip is an alarm, not background noise)", () => {
+    // Defaults documented in CLAUDE.md / VOI-382: 1h scrollback, 250k
+    // safety ceiling. Ceiling is large enough that the chip stays
+    // dark on quiet boxes and means something when it lights up
+    // (codex P2 round-4 2026-05-30 — 50k would permanently truncate
+    // at the documented steady-state ingest of ~67 spans/sec and
+    // habituate operators to the chip).
     expect(loadQueryConfigFromEnv(envFrom({}))).toEqual({
       windowHours: 1,
-      limitCeiling: 50_000,
+      limitCeiling: 250_000,
     });
   });
 
@@ -443,16 +449,51 @@ describe("fetchOnce", () => {
     const init = fetchImpl.mock.calls[0]![1] as RequestInit;
     const body = String(init.body);
     expect(body).toMatch(/WHERE Timestamp > now\(\) - INTERVAL 3 HOUR/);
-    expect(body).toMatch(/LIMIT 12345/);
-    // Hard floor: the SELECT must not regress to a bare LIMIT 1000 with
-    // no WHERE clause.
-    expect(body).not.toMatch(/^[^W]*LIMIT 1000$/m);
+    // LIMIT is ceiling+1 (probe row so fetchOnce can distinguish
+    // exactly-ceiling-and-no-more from actually-truncated).
+    expect(body).toMatch(/LIMIT 12346/);
   });
 
-  it("returns truncated=true when row count meets the limit ceiling", async () => {
-    // Three rows; ceiling=3 → truncated. The flag drives the
-    // SessionSidebar's "// window truncated" chip; without it the operator
-    // has no signal that older sessions were silently dropped.
+  it("SELECT body MUST contain WHERE Timestamp> regardless of which ceiling/window is in effect (anti-regression: anyone deleting WHERE while keeping LIMIT must fail CI)", async () => {
+    // Honest regression guard for the "no WHERE clause" failure mode.
+    // The prior version asserted `expect(body).not.toMatch(/^[^W]*LIMIT 1000$/m)`,
+    // which only checks a single line and is implied by the LIMIT
+    // assertion above — tautological. This one explicitly verifies
+    // WHERE Timestamp> exists in the body, against the DEFAULT config
+    // (not a hand-passed window/ceiling) so a future change that
+    // accidentally bypasses buildSelect's windowing is caught.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("[]", { status: 200 }),
+    );
+    await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      // Default config — no overrides.
+    );
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    const body = String(init.body);
+    expect(body).toMatch(/WHERE\s+Timestamp\s*>\s*now\(\)/);
+    // And the LIMIT clause must be present and a positive integer,
+    // not bare/missing/hardcoded LIMIT 1000.
+    const limitMatch = body.match(/LIMIT\s+(\d+)/);
+    expect(limitMatch).not.toBeNull();
+    const limitVal = Number(limitMatch![1]);
+    expect(limitVal).toBeGreaterThan(1000);
+  });
+
+  it("returns truncated=true when raw row count EXCEEDS the limit ceiling (probe-row pattern)", async () => {
+    // Three raw rows; ceiling=2 → CH actually returned more than the
+    // visible cap → truncated. The flag drives the SessionSidebar's
+    // "// window truncated" chip; without it the operator has no signal
+    // that older sessions were silently dropped. fetchOnce trims the
+    // probe row out of visible rows so SessionSidebar sees at most
+    // ceiling rows even though CH sent ceiling+1.
     const fixtureRow = {
       TraceId: "t",
       SpanId: "s",
@@ -483,20 +524,68 @@ describe("fetchOnce", () => {
         password: "",
       },
       fetchImpl as unknown as typeof fetch,
-      { windowHours: 1, limitCeiling: 3 },
+      { windowHours: 1, limitCeiling: 2 },
     );
-    expect(result.rows.length).toBe(3);
+    // Visible rows TRIMMED to ceiling so SessionSidebar sees at most
+    // ceiling rows even though CH sent ceiling+1 (the probe).
+    expect(result.rows.length).toBe(2);
     expect(result.truncated).toBe(true);
-    // rawRowCount mirrors what CH sent (3 array elements) so the warn
-    // diagnostic cites a count that matches the ceiling-hit decision.
+    // rawRowCount mirrors what CH actually sent (3 array elements)
+    // so the warn diagnostic cites the count that matched the
+    // ceiling-hit decision.
     expect(result.rawRowCount).toBe(3);
   });
 
-  it("truncated detection uses raw row count, NOT parsed-row count (a single malformed JSONEachRow line must not produce a false-negative when CH actually hit the cap)", async () => {
+  it("returns truncated=false when raw row count is EXACTLY the ceiling (the probe row pattern's whole point)", async () => {
+    // Regression: /code-review round-4 P2 2026-05-30. With the prior
+    // `>=` semantic, a quiet window containing exactly ceiling spans
+    // would false-trip the chip even though no data was actually
+    // dropped. Now buildSelect queries ceiling+1 rows and the test is
+    // `rawRowCount > ceiling`, so an exact-ceiling result means "CH had
+    // exactly that many; nothing dropped". The chip stays dark.
+    const fixtureRow = {
+      TraceId: "t",
+      SpanId: "s",
+      ParentSpanId: "",
+      SpanName: "x",
+      Timestamp: "2026-01-01T00:00:00",
+      ServiceName: "svc",
+      AgentProject: "p",
+      AgentSessionId: "as",
+      AgentRunId: "r",
+      SessionId: "sid",
+      ProjectName: "p",
+      ResourceAttributesRaw: {},
+      SpanAttributesRaw: {},
+      StatusCode: "",
+      Duration: 0,
+    };
+    // Exactly 3 rows; ceiling=3 — same count, no probe row consumed.
+    const body = JSON.stringify([fixtureRow, fixtureRow, fixtureRow]);
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(body, { status: 200 }),
+    );
+    const result = await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 1, limitCeiling: 3 },
+    );
+    expect(result.rows.length).toBe(3);
+    expect(result.truncated).toBe(false);
+    expect(result.rawRowCount).toBe(3);
+  });
+
+  it("truncated detection uses raw row count, NOT parsed-row count (a single malformed JSONEachRow line must not produce a false-negative when CH actually exceeded the cap)", async () => {
     // Regression: /code-review round-1 P2 2026-05-30. decodeRows silently
     // skips malformed JSONEachRow lines (matches Swift's log+continue).
     // If truncation were computed from parsed rows.length, a single bad
-    // line when CH returned EXACTLY limitCeiling rows would silently flip
+    // line when CH actually exceeded limitCeiling would silently flip
     // the chip off — recreating the "silent data loss" failure mode that
     // VOI-382 was filed to surface in the first place.
     const goodRow = JSON.stringify({
@@ -517,8 +606,9 @@ describe("fetchOnce", () => {
       Duration: 0,
     });
     // 3 "raw" rows: 2 good + 1 malformed (starts with `{` but is
-    // unparseable). countRawRows must report 3, so with ceiling=3 we
-    // detect truncation even though decodeRows only emits 2 rows.
+    // unparseable). decodeRowsWithCount must report rawRowCount=3 so
+    // truncation detection (which uses rawRowCount, not parsed length)
+    // fires even though decodeRows only emits 2 rows.
     const body = `${goodRow}\n${goodRow}\n{ this is not valid json }`;
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(body, { status: 200 }),
@@ -532,7 +622,7 @@ describe("fetchOnce", () => {
         password: "",
       },
       fetchImpl as unknown as typeof fetch,
-      { windowHours: 1, limitCeiling: 3 },
+      { windowHours: 1, limitCeiling: 2 },
     );
     expect(result.rows.length).toBe(2);
     expect(result.truncated).toBe(true);
@@ -540,6 +630,36 @@ describe("fetchOnce", () => {
     // even though only 2 parsed. The warn cites rawRowCount so the
     // operator sees a count that matches the ceiling-hit decision.
     expect(result.rawRowCount).toBe(3);
+  });
+
+  it("malformed array-shaped body does NOT fall through to the line-scanner (rawRowCount stays accurate, no false truncation chip)", async () => {
+    // Regression: /code-review round-4 P2 2026-05-30. A multi-line
+    // array body like `[\n{...},\n{...}\n` (truncated mid-stream, or
+    // a trailing comma) used to fall through to the JSONEachRow line
+    // splitter, which then counted bracket/comma lines as raw rows
+    // and inflated rawRowCount, potentially false-tripping the
+    // truncation chip at the boundary. Now the array branch
+    // conservatively returns rawRowCount=0 on parse failure.
+    const malformedArray = `[\n{"x":1},\n{"x":2},\n`; // missing closing ]
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(malformedArray, { status: 200 }),
+    );
+    const result = await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 1, limitCeiling: 2 },
+    );
+    expect(result.rows).toEqual([]);
+    // Conservative: parse failed → can't trust the line scanner on
+    // bracket/comma boilerplate → rawRowCount is 0, NOT inflated.
+    expect(result.rawRowCount).toBe(0);
+    expect(result.truncated).toBe(false);
   });
 
   it("returns truncated=false when row count is below the ceiling", async () => {

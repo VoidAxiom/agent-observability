@@ -26,6 +26,15 @@ function buildSelect(windowHours: number, limitCeiling: number): string {
   // value is consumed.
   assertPositiveInt(windowHours, "windowHours");
   assertPositiveInt(limitCeiling, "limitCeiling");
+  // Query LIMIT is ceiling+1 so the (rawRowCount > ceiling) test in
+  // fetchOnce can distinguish "happened to grab exactly ceiling rows
+  // because that's all CH had" from "actually truncated, there were
+  // more". Without the +1 probe row, a quiet window containing exactly
+  // limitCeiling spans would false-positive the truncation chip — the
+  // chip's whole job is to indicate dropped data, not to fire on
+  // ceiling-grazing quiet boxes. fetchOnce trims the probe row before
+  // returning rows, so SessionSidebar still sees at-most-ceiling rows.
+  const probeLimit = limitCeiling + 1;
   return `SELECT
   TraceId, SpanId, ParentSpanId, SpanName, Timestamp, ServiceName,
   ResourceAttributes['agent.project']    AS AgentProject,
@@ -40,7 +49,7 @@ function buildSelect(windowHours: number, limitCeiling: number): string {
 FROM otel_traces
 WHERE Timestamp > now() - INTERVAL ${windowHours} HOUR
 ORDER BY Timestamp DESC
-LIMIT ${limitCeiling}
+LIMIT ${probeLimit}
 FORMAT JSONEachRow`;
 }
 
@@ -67,7 +76,17 @@ export interface ClickHouseQueryConfig {
 }
 
 const DEFAULT_WINDOW_HOURS = 1;
-const DEFAULT_LIMIT_CEILING = 50_000;
+// Ceiling sized so the chip's "// window truncated" reads as an ALARM,
+// not background noise, at the documented steady-state ingest the bug
+// was filed against. The motivating case (per the buildSelect comment)
+// was ~67 spans/sec sustained, i.e. ~241k spans/hour. A 50k ceiling
+// would be permanently tripped on any busy box and operators would
+// habituate to the chip — defeating the warn-once semantic. 250k gives
+// just over an hour of headroom at peak before truncation; on quieter
+// boxes (the typical dev case) the chip stays dark and means something
+// when it lights up. Operator can lower CH_QUERY_LIMIT_CEILING via env
+// if they want a tighter probe.
+const DEFAULT_LIMIT_CEILING = 250_000;
 
 function assertPositiveInt(n: number, name: string): void {
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
@@ -351,11 +370,19 @@ export async function fetchOnce(
   // would otherwise false-negative the truncation chip and recreate the
   // silent-data-loss failure mode VOI-382 was filed to surface).
   const { rows, rawRowCount } = decodeRowsWithCount(text);
-  return {
-    rows,
-    truncated: rawRowCount >= queryConfig.limitCeiling,
-    rawRowCount,
-  };
+  // The query asked CH for ceiling+1 rows (the probe). If CH returned
+  // > ceiling rows, the underlying table had more spans than the
+  // ceiling allows visible — truncated=true. If CH returned ≤ ceiling
+  // rows, the cap WAS NOT actually hit (the table just had that many
+  // spans in the window). Trim the probe row out of the visible rows
+  // when truncation IS detected so SessionSidebar still sees
+  // at-most-ceiling rows; when not truncated, the rawRowCount IS the
+  // table's row count and no trim is needed.
+  const truncated = rawRowCount > queryConfig.limitCeiling;
+  const visibleRows = truncated
+    ? rows.slice(0, queryConfig.limitCeiling)
+    : rows;
+  return { rows: visibleRows, truncated, rawRowCount };
 }
 
 export class ClickHouseError extends Error {
@@ -395,7 +422,15 @@ export function decodeRowsWithCount(text: string): {
   const trimmed = text.trim();
   if (trimmed === "") return { rows: [], rawRowCount: 0 };
 
-  // Try array first.
+  // Try array first. If the body STARTS with `[`, it's an array — period.
+  // Either parse succeeds (use array length as raw count) OR it doesn't
+  // (return empty, rawRowCount=0). Do NOT fall through to the line-by-
+  // line scanner on parse failure: a multi-line array body like
+  // `[\n{...},\n{...}\n]` whose parse threw (truncation, trailing comma)
+  // would otherwise have its bracket/comma boilerplate lines counted as
+  // raw rows, inflating rawRowCount by 1-2 and potentially false-
+  // tripping the truncation chip at the boundary. Codex P2 round-4
+  // 2026-05-30.
   if (trimmed[0] === "[") {
     try {
       const arr = JSON.parse(trimmed) as unknown;
@@ -408,8 +443,10 @@ export function decodeRowsWithCount(text: string): {
         return { rows, rawRowCount: arr.length };
       }
     } catch {
-      // fall through to line-by-line.
+      // Array-shaped body that failed to parse: don't trust the line
+      // scanner on bracket/comma boilerplate. Conservatively report 0.
     }
+    return { rows: [], rawRowCount: 0 };
   }
 
   // Try single top-level object (only valid if the ENTIRE trimmed body parses).
