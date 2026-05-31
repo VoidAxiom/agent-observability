@@ -511,6 +511,10 @@ interface CodexSpanOverrides {
   parentSpanIdStamp?: string;
   parentSessionIdStamp?: string;
   spanName?: string;
+  /** Override TraceId. Real codex_exec spans inherit the parent claude
+   *  trace's TraceId via W3C TRACEPARENT propagation; tests that exercise
+   *  the codex-parent walker's trace scoping need to pin this explicitly. */
+  traceId?: string;
 }
 
 function codexSpan(o: CodexSpanOverrides): SpanRow {
@@ -525,7 +529,7 @@ function codexSpan(o: CodexSpanOverrides): SpanRow {
     resAttrs["agent.parent.session.id"] = o.parentSessionIdStamp;
   }
   return span({
-    traceId: `codex-trace-${o.codexSessionId}-${o.spanId}`,
+    traceId: o.traceId ?? `codex-trace-${o.codexSessionId}-${o.spanId}`,
     spanId: o.spanId,
     parentSpanId: o.parentSpanId ?? "",
     spanName: o.spanName ?? "codex_exec.invoke",
@@ -650,6 +654,9 @@ describe("groupSpansToTree (VOI-386)", () => {
       // ancestry → land on agent_id=sub-2 → nest under that subagent.
       codexSpan({
         codexSessionId: "codex-X",
+        // Codex inherits the parent claude trace's TraceId via
+        // W3C TRACEPARENT propagation.
+        traceId: "claude-trace-sess-C",
         spanId: "cx-1",
         parentSpanIdStamp: "sub-work",
         parentSessionIdStamp: "sess-C",
@@ -746,6 +753,7 @@ describe("groupSpansToTree (VOI-386)", () => {
       }),
       codexSpan({
         codexSessionId: "codex-E1",
+        traceId: "claude-trace-sess-E",
         spanId: "ce1-1",
         parentSpanIdStamp: "sub-anchor",
         parentSessionIdStamp: "sess-E",
@@ -753,6 +761,7 @@ describe("groupSpansToTree (VOI-386)", () => {
       }),
       codexSpan({
         codexSessionId: "codex-E2",
+        traceId: "claude-trace-sess-E",
         spanId: "ce2-1",
         parentSpanIdStamp: "sub-anchor",
         parentSessionIdStamp: "sess-E",
@@ -840,6 +849,7 @@ describe("groupSpansToTree (VOI-386)", () => {
       }),
       codexSpan({
         codexSessionId: "codex-F",
+        traceId: "claude-trace-sess-F",
         spanId: "cf-1",
         parentSpanIdStamp: "sub-anchor",
         parentSessionIdStamp: "sess-F",
@@ -980,6 +990,7 @@ describe("groupSpansToTree (VOI-386)", () => {
       // A codex stamped to session A whose parent.span.id walks up into A's subtree.
       codexSpan({
         codexSessionId: "codex-A",
+        traceId: "claude-trace-sess-A",
         spanId: "ca-1",
         parentSpanIdStamp: "a-sub",
         parentSessionIdStamp: "sess-A",
@@ -1069,6 +1080,8 @@ describe("groupSpansToTree (VOI-386)", () => {
       // row was indexed first.
       codexSpan({
         codexSessionId: "codex-X",
+        // Codex inherits sess-X's claude trace via TRACEPARENT.
+        traceId: "claude-trace-sess-X",
         spanId: "cx-1",
         parentSpanIdStamp: "shared-span",
         parentSessionIdStamp: "sess-X",
@@ -1131,6 +1144,7 @@ describe("groupSpansToTree (VOI-386)", () => {
       // resolution should still nest it under the subagent bucket.
       codexSpan({
         codexSessionId: "codex-orphan",
+        traceId: "claude-trace-sess-dispatch-gone",
         spanId: "co-1",
         parentSpanIdStamp: "sub-w-2",
         parentSessionIdStamp: "sess-dispatch-gone",
@@ -1295,6 +1309,101 @@ describe("groupSpansToTree (VOI-386)", () => {
     // OTHER-AGENT must NOT have inherited inner-A via the cross-trace
     // SpanId collision.
     expect(otherAgent!.children.length).toBe(0);
+  });
+
+  it("codex parent walker scoped by codex's inherited TraceId — same-session cross-trace collision does NOT misroute (codex P2 round-6 2026-05-31)", () => {
+    // A single claude session can carry multiple traces (root claude
+    // trace + sub-traces from fixture replay / idempotent ingestion).
+    // ParentSpanId is trace-local; SpanIds collide only within the
+    // session/trace pair. The codex_exec span inherits its parent
+    // claude trace's TraceId via TRACEPARENT propagation. The codex
+    // parent walker must scope by (sessionId, codex's TraceId, spanId)
+    // so a cross-trace SpanId collision in the SAME session does not
+    // misroute the codex into a foreign trace's subagent.
+    //
+    // Fixture: session 'sess-S' has two traces. trace-A holds the
+    // legitimate ancestry (sub-A is the codex's real parent). trace-B
+    // has a colliding 'shared-id' SpanId belonging to sub-B. The
+    // codex's TraceId is trace-A (inherited), so the walker must find
+    // sub-A — not sub-B.
+    const forest = groupSpansToTree([
+      // trace-A: legitimate ancestry.
+      claudeSpan({
+        sessionId: "sess-S",
+        traceId: "trace-A",
+        spanId: "a-root",
+        timestamp: "2026-01-01T00:40:00.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-S",
+        traceId: "trace-A",
+        spanId: "a-dispatch",
+        parentSpanId: "a-root",
+        timestamp: "2026-01-01T00:40:01.000000000",
+        subagentType: "sub-A",
+      }),
+      claudeSpan({
+        sessionId: "sess-S",
+        traceId: "trace-A",
+        // Colliding SpanId — also exists in trace-B below.
+        spanId: "shared-id",
+        parentSpanId: "a-dispatch",
+        timestamp: "2026-01-01T00:40:02.000000000",
+        agentId: "agent-A",
+      }),
+      // trace-B: unrelated, same session. Inserted FIRST so first-wins
+      // by (sessionId, spanId) alone (round-2 round-5) would put B's
+      // row in the bucket.
+      claudeSpan({
+        sessionId: "sess-S",
+        traceId: "trace-B",
+        spanId: "b-root",
+        timestamp: "2026-01-01T00:41:00.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-S",
+        traceId: "trace-B",
+        spanId: "b-dispatch",
+        parentSpanId: "b-root",
+        timestamp: "2026-01-01T00:41:01.000000000",
+        subagentType: "sub-B",
+      }),
+      claudeSpan({
+        sessionId: "sess-S",
+        traceId: "trace-B",
+        // SAME SpanId as trace-A's subagent ancestor.
+        spanId: "shared-id",
+        parentSpanId: "b-dispatch",
+        timestamp: "2026-01-01T00:41:02.000000000",
+        agentId: "agent-B",
+      }),
+      // Codex stamped to sess-S. The codex's TraceId is trace-A
+      // (inherited from the parent claude process). parent.span.id =
+      // 'shared-id'. The walker MUST scope by trace-A and resolve to
+      // sub-A — not sub-B.
+      codexSpan({
+        codexSessionId: "codex-S",
+        // Codex inherits the parent claude trace's TraceId.
+        traceId: "trace-A",
+        spanId: "cs-1",
+        parentSpanIdStamp: "shared-id",
+        parentSessionIdStamp: "sess-S",
+        timestamp: "2026-01-01T00:40:03.000000000",
+      }),
+    ]);
+
+    const root = findRootBySession(forest, "sess-S");
+    // Find the legitimate subagent (sub-A): it should own the codex.
+    const subA = root.children.find((c) => c.displayLabel === "sub-A");
+    expect(subA).toBeDefined();
+    expect(subA!.children.length).toBe(1);
+    expect(subA!.children[0]!.sessionKey).toBe("codex-S");
+
+    // sub-B must NOT have inherited the codex via the cross-trace
+    // SpanId collision.
+    const subB = root.children.find((c) => c.displayLabel === "sub-B");
+    expect(subB).toBeDefined();
+    expect(subB!.children.length).toBe(0);
   });
 
   it("groupSpans alias matches groupSpansToTree output", () => {
