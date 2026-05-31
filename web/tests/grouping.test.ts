@@ -412,6 +412,75 @@ describe("reconcileSelection", () => {
     expect(cleared.selectedTraceId).toBeNull();
     expect(cleared.selectedSpanId).toBeNull();
   });
+
+  // VOI-388 regression: when the user selects a claude root and a trace
+  // that physically lives on a codex node 2 levels deeper in the subtree,
+  // the reconciler must still validate the trace (it walks ALL descendants
+  // of the selected session, not just session.traces). Without this guard
+  // a future "narrow trace search to direct-children-only" optimization
+  // would silently break the spec contract.
+  it("validates a trace owned by a deep descendant of the selected session", () => {
+    const forest = groupSpansToTree([
+      // Claude root.
+      claudeSpan({
+        sessionId: "sess-deep",
+        spanId: "root",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      // Dispatch + subagent — establishes the subagent node.
+      claudeSpan({
+        sessionId: "sess-deep",
+        spanId: "dispatch",
+        parentSpanId: "root",
+        timestamp: "2026-01-01T00:00:02.000000000",
+        subagentType: "deep-subagent",
+      }),
+      claudeSpan({
+        sessionId: "sess-deep",
+        spanId: "sub-anchor",
+        parentSpanId: "dispatch",
+        timestamp: "2026-01-01T00:00:03.000000000",
+        agentId: "agent-deep",
+      }),
+      // Codex node — stamped with parent.session.id so it joins THIS claude
+      // session's subtree. Uses a DISTINCT codex trace id (a real codex_exec
+      // process not propagating TRACEPARENT would emit on its own trace);
+      // this keeps the test's invariant simple: the trace is owned ONLY by
+      // a descendant node, never by the selected claude session itself, so
+      // a naive "search session.traces" reconciler would silently miss it.
+      codexSpan({
+        codexSessionId: "codex-deep",
+        spanId: "codex-root",
+        traceId: "trace-deep-codex",
+        timestamp: "2026-01-01T00:00:04.000000000",
+        parentSessionIdStamp: "sess-deep",
+      }),
+    ]);
+    const claudeRoot = forest.find((n) => n.id === "sess-deep");
+    expect(claudeRoot).toBeDefined();
+    // The codex node sits under the claude root (parent.span.id walk fails
+    // because the codex emits on its own trace, so the walk falls back to
+    // parent.session.id → claude root). The codex still owns the deep
+    // trace; the claude root does NOT.
+    const codex = claudeRoot!.children.find((c) => c.kind === "codex");
+    expect(codex).toBeDefined();
+    expect(codex!.traces.some((t) => t.id === "trace-deep-codex")).toBe(true);
+    expect(claudeRoot!.traces.some((t) => t.id === "trace-deep-codex")).toBe(
+      false,
+    );
+
+    // The reconciler validates the trace against the selected SESSION's
+    // entire subtree — not just session.traces.
+    const out = reconcileSelection(
+      forest,
+      claudeRoot!.id,
+      "trace-deep-codex",
+      null,
+    );
+    expect(out.selectedSessionId).toBe(claudeRoot!.id);
+    expect(out.selectedTraceId).toBe("trace-deep-codex");
+    expect(out.selectedSpanId).toBeNull();
+  });
 });
 
 describe("parseTimestamp", () => {
