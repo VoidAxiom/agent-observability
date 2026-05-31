@@ -50,10 +50,11 @@ export interface PolledSpansState {
 export interface UsePolledSpansOptions {
   intervalMs?: number;
   config?: ClickHouseConfig;
-  // Test-injectable fetch. Accepts either the legacy SpanRow[] shape (for
-  // existing test fixtures that pre-date VOI-382) or the new FetchResult
-  // shape. Production code path uses fetchOnce which returns FetchResult.
-  fetchImpl?: (config: ClickHouseConfig) => Promise<SpanRow[] | FetchResult>;
+  // Test-injectable fetch. Matches fetchOnce's return shape (FetchResult)
+  // exactly — no dual-shape shim. Tests construct `{ rows, truncated }`
+  // explicitly so the production contract and the test contract stay in
+  // lockstep.
+  fetchImpl?: (config: ClickHouseConfig) => Promise<FetchResult>;
   nowFn?: () => number;
 }
 
@@ -132,20 +133,13 @@ export function usePolledSpans(
       const gen = generationRef.current;
 
       let rows: SpanRow[];
-      let truncated = false;
+      let truncated: boolean;
       try {
         const cfg = resolveConfig();
         const impl = fetchRef.current;
         const result = impl ? await impl(cfg) : await fetchOnce(cfg);
-        // Normalize either shape (legacy SpanRow[] from older test fixtures
-        // OR FetchResult from production fetchOnce). Treat the legacy shape
-        // as not-truncated — only the new shape carries the flag.
-        if (Array.isArray(result)) {
-          rows = result;
-        } else {
-          rows = result.rows;
-          truncated = result.truncated;
-        }
+        rows = result.rows;
+        truncated = result.truncated;
       } catch (err) {
         if (cancelled || !mountedRef.current || gen <= lastCommittedGenRef.current) return;
         const message = err instanceof Error ? err.message : String(err);

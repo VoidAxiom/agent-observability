@@ -120,18 +120,55 @@ export function loadConfigFromEnv(
 export function loadQueryConfigFromEnv(
   env: ImportMetaEnv = (import.meta as ImportMeta).env ?? ({} as ImportMetaEnv),
 ): ClickHouseQueryConfig {
+  // Honor BOTH the repo-standard CH_* convention (matches loadConfigFromEnv,
+  // migrate.sh, docker-compose.yml, the Swift app) AND the VITE_CH_*
+  // fallback for web-only overrides. Without this, an operator who sets
+  // CH_QUERY_LIMIT_CEILING in repo-root .env (because that's the
+  // convention every OTHER knob uses) would have it silently ignored
+  // while the loader looked at VITE_CH_QUERY_LIMIT_CEILING only. The
+  // error message names whichever variant the operator actually set, so
+  // the typo callout points at the right line in their .env.
+  const window = pickRawEnv(
+    env,
+    "CH_QUERY_WINDOW_HOURS",
+    "VITE_CH_QUERY_WINDOW_HOURS",
+  );
+  const ceiling = pickRawEnv(
+    env,
+    "CH_QUERY_LIMIT_CEILING",
+    "VITE_CH_QUERY_LIMIT_CEILING",
+  );
   return {
     windowHours: parsePositiveIntEnv(
-      env.VITE_CH_QUERY_WINDOW_HOURS,
+      window.raw,
       DEFAULT_WINDOW_HOURS,
-      "VITE_CH_QUERY_WINDOW_HOURS",
+      window.name,
     ),
     limitCeiling: parsePositiveIntEnv(
-      env.VITE_CH_QUERY_LIMIT_CEILING,
+      ceiling.raw,
       DEFAULT_LIMIT_CEILING,
-      "VITE_CH_QUERY_LIMIT_CEILING",
+      ceiling.name,
     ),
   };
+}
+
+function pickRawEnv(
+  env: ImportMetaEnv,
+  primary: "CH_QUERY_WINDOW_HOURS" | "CH_QUERY_LIMIT_CEILING",
+  fallback:
+    | "VITE_CH_QUERY_WINDOW_HOURS"
+    | "VITE_CH_QUERY_LIMIT_CEILING",
+): { raw: string | undefined; name: string } {
+  const primaryRaw = (env as Record<string, string | undefined>)[primary];
+  if (primaryRaw !== undefined && primaryRaw !== "") {
+    return { raw: primaryRaw, name: primary };
+  }
+  const fallbackRaw = (env as Record<string, string | undefined>)[fallback];
+  if (fallbackRaw !== undefined && fallbackRaw !== "") {
+    return { raw: fallbackRaw, name: fallback };
+  }
+  // Pass empty/undefined through; parser will return the default.
+  return { raw: primaryRaw ?? fallbackRaw, name: primary };
 }
 
 function parsePositiveIntEnv(
@@ -278,7 +315,62 @@ export async function fetchOnce(
   }
   const text = await response.text();
   const rows = decodeRows(text);
-  return { rows, truncated: rows.length >= queryConfig.limitCeiling };
+  // Compute truncated from the RAW response shape, not from rows.length:
+  // decodeRows silently skips malformed JSONEachRow lines (matches the
+  // Swift impl's log+continue), so a single bad row when CH actually
+  // returned exactly limitCeiling rows would otherwise produce
+  // rows.length = ceiling-1 → false-negative on the truncation chip,
+  // and the operator would never see the signal VOI-382 was built to
+  // surface. countRawRows counts what CH SENT, not what we managed to
+  // parse, so the cap-was-hit detection is robust to row-level decode
+  // failures.
+  const rawCount = countRawRows(text);
+  return { rows, truncated: rawCount >= queryConfig.limitCeiling };
+}
+
+/**
+ * Count the row units in a ClickHouse JSONEachRow / JSON-array / single-
+ * object payload WITHOUT requiring each row to parse — used to detect
+ * the "result hit limitCeiling" condition robustly. Mirrors decodeRows'
+ * branch shape; for the JSON-array case we still parse (the array LENGTH
+ * is the truth, and a malformed array gracefully reports 0 rather than
+ * an incorrect cap-hit).
+ */
+function countRawRows(text: string): number {
+  const trimmed = text.trim();
+  if (trimmed === "") return 0;
+  if (trimmed[0] === "[") {
+    try {
+      const arr = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(arr)) return arr.length;
+    } catch {
+      // fall through to line-by-line.
+    }
+  }
+  if (trimmed[0] === "{") {
+    // Could be JSONEachRow (multiple top-level objects, one per line) OR
+    // a single pretty-printed object. The newline-split below handles
+    // both: a single pretty-printed object spans many lines, only one of
+    // which starts with `{`. Match that heuristic — count non-empty
+    // lines whose first non-space char is `{`.
+  }
+  let count = 0;
+  for (const rawLine of trimmed.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "") continue;
+    if (line[0] === "{") count += 1;
+  }
+  // Pretty-printed single object: many `{` lines (nested), but
+  // decodeRows would still emit 1 row. Cap at the number of
+  // top-level lines starting with `{` — for the JSONEachRow case
+  // (the production path) that's exact; for pretty-printed
+  // multi-line single object it would over-count, but the chip
+  // would only mis-trigger if the user's CH was returning a
+  // pretty-printed single-object payload AND that object's raw text
+  // happened to have ≥ limitCeiling internal `{` characters at
+  // line-start. Production CH JSONEachRow never produces that
+  // shape; this is acceptable.
+  return count;
 }
 
 export class ClickHouseError extends Error {

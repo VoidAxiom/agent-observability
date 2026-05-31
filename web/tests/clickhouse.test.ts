@@ -288,6 +288,32 @@ describe("loadQueryConfigFromEnv", () => {
     expect(cfg).toEqual({ windowHours: 6, limitCeiling: 100_000 });
   });
 
+  it("reads the repo-standard CH_QUERY_* names and prefers them over VITE_CH_QUERY_*", () => {
+    // Same convention as loadConfigFromEnv: CH_* is repo-standard
+    // (matches .env.example, migrate.sh, docker-compose, Swift app);
+    // VITE_CH_* is the web-only fallback. An operator setting
+    // CH_QUERY_LIMIT_CEILING in repo-root .env must NOT have it
+    // silently ignored.
+    const onlyRepoStandard = loadQueryConfigFromEnv(
+      envFrom({
+        CH_QUERY_WINDOW_HOURS: "12",
+        CH_QUERY_LIMIT_CEILING: "200000",
+      }),
+    );
+    expect(onlyRepoStandard).toEqual({
+      windowHours: 12,
+      limitCeiling: 200_000,
+    });
+
+    const bothSet = loadQueryConfigFromEnv(
+      envFrom({
+        CH_QUERY_WINDOW_HOURS: "12",
+        VITE_CH_QUERY_WINDOW_HOURS: "1",
+      }),
+    );
+    expect(bothSet.windowHours).toBe(12);
+  });
+
   it("throws on a present-but-invalid window-hours (not silently defaulted)", () => {
     // Regression discipline: the port loader throws on a present-but-
     // invalid value rather than coercing to the default, because silent
@@ -423,6 +449,52 @@ describe("fetchOnce", () => {
       { windowHours: 1, limitCeiling: 3 },
     );
     expect(result.rows.length).toBe(3);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("truncated detection uses raw row count, NOT parsed-row count (a single malformed JSONEachRow line must not produce a false-negative when CH actually hit the cap)", async () => {
+    // Regression: /code-review round-1 P2 2026-05-30. decodeRows silently
+    // skips malformed JSONEachRow lines (matches Swift's log+continue).
+    // If truncation were computed from parsed rows.length, a single bad
+    // line when CH returned EXACTLY limitCeiling rows would silently flip
+    // the chip off — recreating the "silent data loss" failure mode that
+    // VOI-382 was filed to surface in the first place.
+    const goodRow = JSON.stringify({
+      TraceId: "t",
+      SpanId: "s",
+      ParentSpanId: "",
+      SpanName: "x",
+      Timestamp: "2026-01-01T00:00:00",
+      ServiceName: "svc",
+      AgentProject: "p",
+      AgentSessionId: "as",
+      AgentRunId: "r",
+      SessionId: "sid",
+      ProjectName: "p",
+      ResourceAttributesRaw: {},
+      SpanAttributesRaw: {},
+      StatusCode: "",
+      Duration: 0,
+    });
+    // 3 "raw" rows: 2 good + 1 malformed (starts with `{` but is
+    // unparseable). countRawRows must report 3, so with ceiling=3 we
+    // detect truncation even though decodeRows only emits 2 rows.
+    const body = `${goodRow}\n${goodRow}\n{ this is not valid json }`;
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(body, { status: 200 }),
+    );
+    const result = await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 1, limitCeiling: 3 },
+    );
+    expect(result.rows.length).toBe(2);
     expect(result.truncated).toBe(true);
   });
 
