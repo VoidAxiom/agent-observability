@@ -96,14 +96,25 @@ export function SessionSidebar({
   const buckets = useMemo(() => bucketByService(sessions), [sessions]);
 
   if (sessions.length === 0) {
+    // When the chip is shown we use the stacked-from-top layout (chip
+    // at top, message below it) so the chip reads as a header banner.
+    // When there's no chip, fall back to the centered awaiting-message
+    // style. Layout split inline (rather than two style objects) so the
+    // intent reads in one place: the chip is what changes the layout.
     return (
-      <aside aria-label="Sessions" style={emptyStateStyle}>
+      <aside
+        aria-label="Sessions"
+        style={truncated ? emptyStateWithChipStyle : emptyStateStyle}
+      >
         {truncated ? (
           // Diagnostic hole if omitted: codex P2 round-2 2026-05-30. The
           // empty-state path is REACHABLE while truncated=true — e.g. CH
           // returns 50k rows but every span lacks a SessionId so groupSpans
           // collapses to zero sessions. The very situation that most needs
           // the chip would otherwise hide it.
+          // The container uses flexDirection:column so the chip and message
+          // STACK vertically (codex P2 round-3 2026-05-30 — the prior row-
+          // default crowded them side-by-side).
           <p
             role="status"
             data-truncation-chip="true"
@@ -406,6 +417,20 @@ const emptyStateStyle: CSSProperties = {
   alignItems: "flex-start",
   justifyContent: "center",
   padding: "20px",
+  height: "100%",
+};
+
+// Variant of emptyStateStyle used when the truncation chip is also
+// rendered in the empty-state path. flexDirection:column so the chip
+// stacks above the message (the default row direction crowded them
+// side-by-side — codex P2 round-3 2026-05-30).
+const emptyStateWithChipStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "stretch",
+  justifyContent: "flex-start",
+  gap: "10px",
+  padding: "14px 12px",
   height: "100%",
 };
 

@@ -309,6 +309,14 @@ export interface FetchResult {
    * CH_QUERY_WINDOW_HOURS.
    */
   truncated: boolean;
+  /**
+   * Number of row UNITS in the raw CH response (before coercion).
+   * Distinct from rows.length, which can be smaller when individual
+   * rows fail JSON.parse or coerceRow. Useful for diagnostics — the
+   * truncation console.warn cites this so the logged count matches the
+   * count truncated was actually decided from. Codex P2 round-3 2026-05-30.
+   */
+  rawRowCount: number;
 }
 
 export async function fetchOnce(
@@ -343,7 +351,11 @@ export async function fetchOnce(
   // would otherwise false-negative the truncation chip and recreate the
   // silent-data-loss failure mode VOI-382 was filed to surface).
   const { rows, rawRowCount } = decodeRowsWithCount(text);
-  return { rows, truncated: rawRowCount >= queryConfig.limitCeiling };
+  return {
+    rows,
+    truncated: rawRowCount >= queryConfig.limitCeiling,
+    rawRowCount,
+  };
 }
 
 export class ClickHouseError extends Error {

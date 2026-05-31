@@ -18,7 +18,7 @@ import type { SpanRow } from "../src/lib/grouping";
 // Tests that need to assert truncated semantics construct the literal
 // directly instead of going through here.
 function ok(rows: SpanRow[]): FetchResult {
-  return { rows, truncated: false };
+  return { rows, truncated: false, rawRowCount: rows.length };
 }
 
 function row(spanId: string, sessionId: string): SpanRow {
@@ -290,11 +290,13 @@ describe("usePolledSpans", () => {
           return {
             rows: [row("a", "session-a")],
             truncated: true,
+            rawRowCount: 50_000,
           };
         }
         return {
           rows: [row("b", "session-b")],
           truncated: false,
+          rawRowCount: 1,
         };
       });
 
@@ -316,6 +318,10 @@ describe("usePolledSpans", () => {
       expect(afterFirst.truncated).toBe(true);
       // The false→true transition fires console.warn exactly once.
       expect(warnSpy).toHaveBeenCalledTimes(1);
+      // Warn cites the RAW row count (the count truncated was decided
+      // from), not rows.length. Codex P2 round-3 2026-05-30.
+      const warnText = warnSpy.mock.calls[0]?.[0] as string;
+      expect(warnText).toContain("50000 raw rows");
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60);

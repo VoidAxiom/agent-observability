@@ -134,12 +134,18 @@ export function usePolledSpans(
 
       let rows: SpanRow[];
       let truncated: boolean;
+      // rawRowCount comes off FetchResult so the truncation warn cites the
+      // exact count CH SENT (the count truncated was decided from), not
+      // rows.length which can be smaller when individual rows fail to
+      // parse — codex P2 round-3 2026-05-30.
+      let rawRowCount: number;
       try {
         const cfg = resolveConfig();
         const impl = fetchRef.current;
         const result = impl ? await impl(cfg) : await fetchOnce(cfg);
         rows = result.rows;
         truncated = result.truncated;
+        rawRowCount = result.rawRowCount;
       } catch (err) {
         if (cancelled || !mountedRef.current || gen <= lastCommittedGenRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
@@ -164,7 +170,7 @@ export function usePolledSpans(
       if (truncated && !lastTruncatedRef.current) {
         console.warn(
           `[usePolledSpans] ClickHouse result hit the row-count safety ceiling ` +
-            `(${rows.length} rows). Older spans within the configured time window ` +
+            `(${rawRowCount} raw rows). Older spans within the configured time window ` +
             `were dropped. Raise CH_QUERY_LIMIT_CEILING (or VITE_CH_QUERY_LIMIT_CEILING ` +
             `as a web-only fallback), or shorten CH_QUERY_WINDOW_HOURS.`,
         );

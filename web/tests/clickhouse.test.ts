@@ -487,6 +487,9 @@ describe("fetchOnce", () => {
     );
     expect(result.rows.length).toBe(3);
     expect(result.truncated).toBe(true);
+    // rawRowCount mirrors what CH sent (3 array elements) so the warn
+    // diagnostic cites a count that matches the ceiling-hit decision.
+    expect(result.rawRowCount).toBe(3);
   });
 
   it("truncated detection uses raw row count, NOT parsed-row count (a single malformed JSONEachRow line must not produce a false-negative when CH actually hit the cap)", async () => {
@@ -533,6 +536,10 @@ describe("fetchOnce", () => {
     );
     expect(result.rows.length).toBe(2);
     expect(result.truncated).toBe(true);
+    // Critical for the diagnostic: rawRowCount is 3 (CH sent 3 lines)
+    // even though only 2 parsed. The warn cites rawRowCount so the
+    // operator sees a count that matches the ceiling-hit decision.
+    expect(result.rawRowCount).toBe(3);
   });
 
   it("returns truncated=false when row count is below the ceiling", async () => {
@@ -552,6 +559,7 @@ describe("fetchOnce", () => {
     );
     expect(result.rows).toEqual([]);
     expect(result.truncated).toBe(false);
+    expect(result.rawRowCount).toBe(0);
   });
 
   it("still validates host/port at the fetch boundary", async () => {
