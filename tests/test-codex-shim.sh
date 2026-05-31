@@ -363,6 +363,57 @@ else
   fi
 fi
 
+# 13. Existing non-symlink at attrs target does not partially install codex.
+tmp="$(new_case_dir)"
+install_dir="$tmp/bin"
+make_fake_codex "$tmp/realbin"
+mkdir -p "$install_dir"
+printf 'not-a-symlink\n' > "$install_dir/codex-otel-attrs.sh"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+if run_with_capture "$stdout" "$stderr" env -i PATH="$install_dir:$tmp/realbin:$BASE_PATH" INSTALL_DIR="$install_dir" HOME="$tmp/home" bash "$ROOT/scripts/install-codex-shim.sh"; then
+  fail_case 'case13 existing attrs non-symlink' 'expected installer refusal, got 0'
+else
+  assert_contains 'case13 existing attrs non-symlink filename' "$(<"$stderr")" 'codex-otel-attrs.sh'
+  assert_contains 'case13 existing attrs non-symlink error' "$(<"$stderr")" 'not the expected symlink'
+  if [[ ! -e "$install_dir/codex" ]]; then
+    pass_case 'case13 codex symlink not created'
+  else
+    fail_case 'case13 codex symlink not created' 'codex link was created before attrs refusal'
+  fi
+  if [[ "$(<"$install_dir/codex-otel-attrs.sh")" == 'not-a-symlink' ]]; then
+    pass_case 'case13 existing attrs non-symlink preserved'
+  else
+    fail_case 'case13 existing attrs non-symlink preserved' 'regular file was overwritten'
+  fi
+fi
+
+# 14. Existing wrong symlink at attrs target does not partially install codex.
+tmp="$(new_case_dir)"
+install_dir="$tmp/bin"
+make_fake_codex "$tmp/realbin"
+mkdir -p "$install_dir"
+wrong_attrs_target="$tmp/wrong-attrs.sh"
+ln -s "$wrong_attrs_target" "$install_dir/codex-otel-attrs.sh"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+if run_with_capture "$stdout" "$stderr" env -i PATH="$install_dir:$tmp/realbin:$BASE_PATH" INSTALL_DIR="$install_dir" HOME="$tmp/home" bash "$ROOT/scripts/install-codex-shim.sh"; then
+  fail_case 'case14 existing attrs wrong symlink' 'expected installer refusal, got 0'
+else
+  assert_contains 'case14 existing attrs wrong symlink filename' "$(<"$stderr")" 'codex-otel-attrs.sh'
+  assert_contains 'case14 existing attrs wrong symlink expected' "$(<"$stderr")" 'expected'
+  if [[ ! -e "$install_dir/codex" ]]; then
+    pass_case 'case14 codex symlink not created'
+  else
+    fail_case 'case14 codex symlink not created' 'codex link was created before attrs refusal'
+  fi
+  if [[ "$(readlink "$install_dir/codex-otel-attrs.sh")" == "$wrong_attrs_target" ]]; then
+    pass_case 'case14 existing attrs wrong symlink preserved'
+  else
+    fail_case 'case14 existing attrs wrong symlink preserved' 'wrong symlink target was overwritten'
+  fi
+fi
+
 if [[ "$FAIL" -ne 0 ]]; then
   printf '\nTEST FAILURES\n' >&2
   exit 1

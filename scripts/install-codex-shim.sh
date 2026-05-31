@@ -86,11 +86,48 @@ install_link() {
   return 1
 }
 
+precheck_link() {
+  local link_path="$1"
+  local expected_target="$2"
+  local current_target
+
+  if [[ -L "$link_path" ]]; then
+    current_target="$(readlink "$link_path")"
+    if [[ "$current_target" == "$expected_target" ]]; then
+      return 0
+    fi
+    printf 'install-codex-shim: %s exists but points to %s, expected %s\n' \
+      "$link_path" "$current_target" "$expected_target" >&2
+    return 2
+  fi
+
+  if [[ -e "$link_path" ]]; then
+    printf 'install-codex-shim: %s exists and is not the expected symlink\n' "$link_path" >&2
+    return 2
+  fi
+
+  return 1
+}
+
 path_contains_real_codex_after_install_dir
 
 codex_link="$INSTALL_DIR/codex"
 attrs_link="$INSTALL_DIR/codex-otel-attrs.sh"
 already=0
+
+link_status=0
+precheck_link "$codex_link" "$shim_src" || link_status=$?
+case "$link_status" in
+  0 | 1) ;;
+  *) exit "$link_status" ;;
+esac
+
+link_status=0
+precheck_link "$attrs_link" "$attrs_src" || link_status=$?
+case "$link_status" in
+  0 | 1) ;;
+  *) exit "$link_status" ;;
+esac
 
 link_status=0
 install_link "$codex_link" "$shim_src" || link_status=$?
