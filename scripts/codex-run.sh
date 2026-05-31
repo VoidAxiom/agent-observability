@@ -10,6 +10,14 @@
 # CODEX_MODEL overrides the model id (default below). Network stays disabled.
 set -uo pipefail
 
+# Path-resolve relative to this script so cwd doesn't matter.
+_CODEX_RUN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$_CODEX_RUN_DIR/codex-otel-attrs.sh" || {
+  echo "codex-run.sh: failed to source $_CODEX_RUN_DIR/codex-otel-attrs.sh" >&2
+  exit 2
+}
+
 ROLE="${1:-}"
 RUN_ID="${2:-}"
 TASK_SRC="${3:-}"
@@ -72,6 +80,13 @@ else
     -c model="$CODEX_MODEL" \
     --output-schema "$SCHEMA" -o "$RUN/result.json" "$(cat "$RUN/task.md")"
 fi
+
+# Stamp OTel resource attributes so codex spans land with explicit
+# agent.session.id / parent ids / kind. See VOI-385.
+OTEL_RESOURCE_ATTRIBUTES="$(build_codex_otel_resource_attrs "$RUN_ID")"
+export OTEL_RESOURCE_ATTRIBUTES
+printf 'codex-run: OTEL_RESOURCE_ATTRIBUTES=%s\n' "$OTEL_RESOURCE_ATTRIBUTES" >&2
+printf '%s\n' "$OTEL_RESOURCE_ATTRIBUTES" > "$RUN/otel-resource-attrs.txt"
 
 # Record the exact command (task arg elided for readability).
 { printf '%q ' "${@:1:$(($#-1))}"; echo '"$(cat '"$RUN"'/task.md)"'; } > "$RUN/command.sh"
