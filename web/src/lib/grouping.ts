@@ -132,7 +132,12 @@ export interface Selection {
   selectedSpanId: string | null;
 }
 
-const DISTANT_PAST = -8.64e15; // sentinel for unparseable timestamps (matches Swift .distantPast semantics)
+// Sentinel for unparseable timestamps (matches Swift .distantPast
+// semantics). Exported so formatTime.isUsable() shares the SAME value
+// — VOI-389 round-5 (codex) called out a duplicate constant living in
+// both modules; two definitions invite drift if anyone later widens
+// the sentinel domain.
+export const DISTANT_PAST = -8.64e15;
 const CLAUDE_SERVICE = "claude-code";
 const CODEX_SERVICE = "codex_exec";
 

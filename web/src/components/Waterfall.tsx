@@ -663,11 +663,27 @@ function TimeAxis({
     }
   }
 
+  // VOI-389 round-5 (codex P2): the absolute EST/EDT tick label is
+  // ~130px wide ("HH:MM:SS AM/PM EDT"). Rendered at x+2 with default
+  // textAnchor=start, a label whose x is anywhere near the right edge
+  // of innerWidth runs past the SVG boundary and gets clipped (SVG
+  // overflow defaults to hidden). For ticks within RIGHT_EDGE_MARGIN
+  // of innerWidth, anchor the absolute label end-aligned at x-2 so it
+  // grows leftward instead — losing the timezone suffix was the exact
+  // regression. The major-tick numeric labels (~30px wide) get the
+  // same treatment for symmetry; they previously fit only because the
+  // strings were short.
+  const ABSOLUTE_LABEL_PX = 130;
+  const TICK_LABEL_PX = 36;
+  const rightEdge = originX + innerWidth;
+
   return (
     <g aria-hidden="true">
       {ticks.map(({ ms, major }, idx) => {
         const x = originX + (ms / durationMs) * innerWidth;
         const showAbsolute = major && absoluteMsSet.has(ms);
+        const absoluteAnchorEnd = rightEdge - x < ABSOLUTE_LABEL_PX;
+        const tickAnchorEnd = rightEdge - x < TICK_LABEL_PX;
         return (
           <g key={`tick-${idx}-${ms}`}>
             <line
@@ -680,8 +696,9 @@ function TimeAxis({
             {major ? (
               <text
                 className="voi-waterfall-tick-label"
-                x={x + 2}
+                x={tickAnchorEnd ? x - 2 : x + 2}
                 y={height - 8}
+                textAnchor={tickAnchorEnd ? "end" : "start"}
               >
                 {formatTickMs(ms)}
               </text>
@@ -690,8 +707,9 @@ function TimeAxis({
               <text
                 className="voi-waterfall-tick-label"
                 data-absolute-tick="true"
-                x={x + 2}
+                x={absoluteAnchorEnd ? x - 2 : x + 2}
                 y={height - 20}
+                textAnchor={absoluteAnchorEnd ? "end" : "start"}
               >
                 {formatAbsoluteEst(traceStartMs + ms)}
               </text>

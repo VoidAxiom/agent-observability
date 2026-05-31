@@ -14,13 +14,14 @@
  * throughput guard.
  */
 
+import { DISTANT_PAST } from "./grouping";
+
 const TZ = "America/New_York";
 const FALLBACK = "--";
-// Matches the DISTANT_PAST sentinel in grouping.ts (Swift's
-// .distantPast). Treated as "unknown time" rather than rendering as a
-// year-275000-BCE Intl output. Hand-coding the value (rather than
-// importing it) keeps formatTime free of a cyclic dep on grouping.ts.
-const DISTANT_PAST_SENTINEL = -8.64e15;
+// VOI-389 round-5: codex flagged that the sentinel value was
+// hand-coded here AND in grouping.ts — two definitions invite drift.
+// grouping.ts has zero imports from formatTime, so there's no cycle
+// to avoid; import the canonical sentinel directly.
 
 const HMS_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: TZ,
@@ -56,7 +57,7 @@ const FULL_FORMATTER = new Intl.DateTimeFormat("en-US", {
 });
 
 function isUsable(ms: number): boolean {
-  return Number.isFinite(ms) && ms !== DISTANT_PAST_SENTINEL;
+  return Number.isFinite(ms) && ms !== DISTANT_PAST;
 }
 
 /**
