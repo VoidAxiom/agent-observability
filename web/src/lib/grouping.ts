@@ -346,13 +346,21 @@ function buildClaudeNode(
   // claude root.
   const dispatchInfo = buildDispatchAgentIdMap(sessionRows);
 
-  // Partition spans: those with agent_id present in the dispatch map
-  // belong to a subagent bucket; everything else stays on the claude node.
+  // Partition spans by spec § Layer 1 step 2: "bucket the claude spans
+  // that carry a (non-root) agent_id by that agent_id" — the dispatch
+  // span supplies the LABEL but is not required for bucketing. Codex
+  // round-3 P2 2026-05-31: when the polling window truncates the older
+  // dispatch span but keeps the subagent's still-active work spans,
+  // gating bucket-creation on dispatch presence would fold those work
+  // spans into the claude root and the subagent → codex relationship
+  // would silently disappear from the visible tree. The dispatch-info
+  // map is consulted later (per-bucket) to look up subagent_type /
+  // outerAgentId, with defensible fallbacks when absent.
   const claudeOwnSpans: SpanRow[] = [];
   const subagentBuckets = new Map<string, SpanRow[]>();
   for (const row of sessionRows) {
     const agentId = row.SpanAttributesRaw["agent_id"] ?? "";
-    if (agentId !== "" && dispatchInfo.has(agentId)) {
+    if (agentId !== "") {
       pushBucket(subagentBuckets, agentId, row);
     } else {
       claudeOwnSpans.push(row);

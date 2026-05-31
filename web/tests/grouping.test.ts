@@ -1089,6 +1089,68 @@ describe("groupSpansToTree (VOI-386)", () => {
     expect(subY.children.length).toBe(0);
   });
 
+  it("dispatch-absent: agent_id spans still bucket into a subagent node (codex P2 round-3 2026-05-31)", () => {
+    // Polling windows are bounded: a long-running session whose dispatch
+    // span (subagent_type) has aged out OR been truncated still emits
+    // subagent work spans with agent_id. Per spec § Layer 1 step 2
+    // ("bucket the claude spans that carry a (non-root) agent_id by that
+    // agent_id"), the dispatch span is for LABELING — bucketing must
+    // happen on agent_id alone. Without this, work spans fold into the
+    // claude root and the subagent → codex relationship vanishes from
+    // the visible tree for any session whose window doesn't include the
+    // original dispatch.
+    const forest = groupSpansToTree([
+      // Claude root span — no agent_id.
+      claudeSpan({
+        sessionId: "sess-dispatch-gone",
+        spanId: "root-w",
+        timestamp: "2026-01-01T00:10:00.000000000",
+      }),
+      // Subagent work span — has agent_id but NO matching dispatch span
+      // in this window (the original dispatch aged out of the poll).
+      claudeSpan({
+        sessionId: "sess-dispatch-gone",
+        spanId: "sub-w-1",
+        parentSpanId: "root-w",
+        timestamp: "2026-01-01T00:10:01.000000000",
+        agentId: "lonely-agent",
+      }),
+      claudeSpan({
+        sessionId: "sess-dispatch-gone",
+        spanId: "sub-w-2",
+        parentSpanId: "sub-w-1",
+        timestamp: "2026-01-01T00:10:02.000000000",
+        agentId: "lonely-agent",
+      }),
+      // Codex launched from inside that orphaned subagent — its parent
+      // resolution should still nest it under the subagent bucket.
+      codexSpan({
+        codexSessionId: "codex-orphan",
+        spanId: "co-1",
+        parentSpanIdStamp: "sub-w-2",
+        parentSessionIdStamp: "sess-dispatch-gone",
+        timestamp: "2026-01-01T00:10:03.000000000",
+      }),
+    ]);
+
+    const root = findRootBySession(forest, "sess-dispatch-gone");
+    expect(root.children.length).toBe(1);
+    const sub = root.children[0]!;
+    expect(sub.kind).toBe("subagent");
+    // Label falls back to the agent_id itself (since the dispatch span
+    // carrying subagent_type isn't in the window).
+    expect(sub.displayLabel).toBe("lonely-agent");
+    // Subagent owns its two work spans; claude root keeps root-w only.
+    expect(sub.spans.map((s) => s.SpanId).sort()).toEqual([
+      "sub-w-1",
+      "sub-w-2",
+    ]);
+    expect(root.spans.map((s) => s.SpanId).sort()).toEqual(["root-w"]);
+    // Codex still resolves through the tier-1 walker into the subagent.
+    expect(sub.children.length).toBe(1);
+    expect(sub.children[0]!.sessionKey).toBe("codex-orphan");
+  });
+
   it("groupSpans alias matches groupSpansToTree output", () => {
     const rows = [
       claudeSpan({
