@@ -309,22 +309,28 @@ export function findNodeById(
  * `add()`ed every span in the window on every invocation; on the operator's
  * 350k-span 6h window it produced a 1-2s click-to-paint lag (VOI-388).
  *
- * Behavior preserved bit-for-bit (proven by `selection-flow.test.tsx` plus
- * the equivalence cases in `grouping-perf.test.ts`):
- * - `selectedTraceId` is preserved iff the selected session OR ANY
- *   DESCENDANT NODE owns a trace with that id (forest-wide traceId
- *   visibility for descendant traces — this is why we walk the subtree,
- *   not just `session.traces`).
- * - `selectedSpanId` is preserved iff a span in the MATCHED trace has
- *   that id. The previous impl checked a forest-wide spanId Set, but the
- *   only way a spanId could validate without its trace validating is if
- *   the spanId existed in a trace whose id wasn't selectedTraceId — and
- *   then App.tsx's reconcile useEffect nulls the orphan span anyway when
- *   the trace doesn't match. Net behavior is identical.
- * - Null/undefined inputs → null in output.
- * - Empty forest → all null.
+ * Behavior contract — equivalent to the pre-VOI-388 forest-wide-Set impl
+ * on every state REACHABLE via App.tsx's reconcile useEffect normalization,
+ * NOT bit-for-bit identical in isolation. The narrowing relative to the
+ * old impl is deliberate:
+ * - `selectedTraceId`: old validated against a forest-wide traceId Set;
+ *   new validates against the selected session's SUBTREE only. Both
+ *   produce the same result when the (session, trace) pair was assembled
+ *   by a previous reconcile/click — App.tsx never carries a trace from a
+ *   different session's subtree across a selection change. Selected
+ *   session OR ANY DESCENDANT NODE owning a trace with that id validates;
+ *   this is why we walk the subtree, not just `session.traces`.
+ * - `selectedSpanId`: old validated against a forest-wide spanId Set; new
+ *   validates against the MATCHED trace's spans only. Same reachability
+ *   argument: App.tsx never carries a span from a different trace's
+ *   subtree across a selection change. The
+ *   `selection-flow.test.tsx` behavioral oracle proves the public-facing
+ *   UI behavior is unchanged; `grouping-perf.test.ts` documents the
+ *   unreachable corner where the two impls' raw outputs differ.
+ * - Null/undefined inputs → null in output (unchanged).
+ * - Empty forest → all null (unchanged).
  * - The Selection field's nulling cascade (if session went null, also
- *   null trace+span) is App.tsx's job, not this function's.
+ *   null trace+span) is App.tsx's job, not this function's (unchanged).
  */
 export function reconcileSelection(
   sessions: SessionNode[],

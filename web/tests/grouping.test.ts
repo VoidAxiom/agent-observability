@@ -414,12 +414,13 @@ describe("reconcileSelection", () => {
   });
 
   // VOI-388 regression: when the user selects a claude root and a trace
-  // that physically lives on a codex node 2 levels deeper in the subtree,
-  // the reconciler must still validate the trace (it walks ALL descendants
-  // of the selected session, not just session.traces). Without this guard
-  // a future "narrow trace search to direct-children-only" optimization
-  // would silently break the spec contract.
-  it("validates a trace owned by a deep descendant of the selected session", () => {
+  // that physically lives on a codex node nested 2 LEVELS deep (claude →
+  // subagent → codex, with the trace on the codex), the reconciler must
+  // still validate the trace. Without this guard a future
+  // "narrow trace search to direct-children-only" optimization (e.g.
+  // `session.children.some(c => c.traces.some(...))`) would silently
+  // break the spec contract.
+  it("validates a trace owned by a grandchild (claude → subagent → codex)", () => {
     const forest = groupSpansToTree([
       // Claude root.
       claudeSpan({
@@ -427,7 +428,7 @@ describe("reconcileSelection", () => {
         spanId: "root",
         timestamp: "2026-01-01T00:00:01.000000000",
       }),
-      // Dispatch + subagent — establishes the subagent node.
+      // Dispatch span — carries subagent_type.
       claudeSpan({
         sessionId: "sess-deep",
         spanId: "dispatch",
@@ -435,6 +436,7 @@ describe("reconcileSelection", () => {
         timestamp: "2026-01-01T00:00:02.000000000",
         subagentType: "deep-subagent",
       }),
+      // Subagent's first work span — establishes the subagent's agent_id.
       claudeSpan({
         sessionId: "sess-deep",
         spanId: "sub-anchor",
@@ -442,43 +444,63 @@ describe("reconcileSelection", () => {
         timestamp: "2026-01-01T00:00:03.000000000",
         agentId: "agent-deep",
       }),
-      // Codex node — stamped with parent.session.id so it joins THIS claude
-      // session's subtree. Uses a DISTINCT codex trace id (a real codex_exec
-      // process not propagating TRACEPARENT would emit on its own trace);
-      // this keeps the test's invariant simple: the trace is owned ONLY by
-      // a descendant node, never by the selected claude session itself, so
-      // a naive "search session.traces" reconciler would silently miss it.
+      // Codex stamped with parent.span.id=sub-anchor + parent.session.id;
+      // resolver walks the anchor's ancestry on the claude trace, finds
+      // agent_id=agent-deep → nests codex UNDER the subagent (2 levels
+      // deep from claude root). Codex inherits the parent claude
+      // TraceId via TRACEPARENT propagation so the walker stays in the
+      // same trace.
       codexSpan({
         codexSessionId: "codex-deep",
         spanId: "codex-root",
-        traceId: "trace-deep-codex",
+        traceId: "claude-trace-sess-deep",
         timestamp: "2026-01-01T00:00:04.000000000",
+        parentSpanIdStamp: "sub-anchor",
+        parentSessionIdStamp: "sess-deep",
+      }),
+      // Additional codex work span on a DIFFERENT trace id so the codex
+      // node owns a trace the claude root does not. That trace ("trace-
+      // grandchild-only") is what we'll select on — provable proof the
+      // reconciler walks past direct-children into grandchildren.
+      codexSpan({
+        codexSessionId: "codex-deep",
+        spanId: "codex-side",
+        traceId: "trace-grandchild-only",
+        timestamp: "2026-01-01T00:00:05.000000000",
+        parentSpanIdStamp: "sub-anchor",
         parentSessionIdStamp: "sess-deep",
       }),
     ]);
     const claudeRoot = forest.find((n) => n.id === "sess-deep");
     expect(claudeRoot).toBeDefined();
-    // The codex node sits under the claude root (parent.span.id walk fails
-    // because the codex emits on its own trace, so the walk falls back to
-    // parent.session.id → claude root). The codex still owns the deep
-    // trace; the claude root does NOT.
-    const codex = claudeRoot!.children.find((c) => c.kind === "codex");
+    // claude root → subagent → codex: confirm topology before testing.
+    const subagent = claudeRoot!.children.find((c) => c.kind === "subagent");
+    expect(subagent).toBeDefined();
+    const codex = subagent!.children.find((c) => c.kind === "codex");
     expect(codex).toBeDefined();
-    expect(codex!.traces.some((t) => t.id === "trace-deep-codex")).toBe(true);
-    expect(claudeRoot!.traces.some((t) => t.id === "trace-deep-codex")).toBe(
-      false,
-    );
+    expect(codex!.parentId).toBe(subagent!.id);
+    // The grandchild-only trace lives on the codex; neither the claude
+    // root nor the intermediate subagent owns it.
+    expect(
+      codex!.traces.some((t) => t.id === "trace-grandchild-only"),
+    ).toBe(true);
+    expect(
+      claudeRoot!.traces.some((t) => t.id === "trace-grandchild-only"),
+    ).toBe(false);
+    expect(
+      subagent!.traces.some((t) => t.id === "trace-grandchild-only"),
+    ).toBe(false);
 
-    // The reconciler validates the trace against the selected SESSION's
-    // entire subtree — not just session.traces.
+    // Selecting the CLAUDE ROOT + grandchild trace must validate — the
+    // reconciler walks the subagent down to the codex grandchild.
     const out = reconcileSelection(
       forest,
       claudeRoot!.id,
-      "trace-deep-codex",
+      "trace-grandchild-only",
       null,
     );
     expect(out.selectedSessionId).toBe(claudeRoot!.id);
-    expect(out.selectedTraceId).toBe("trace-deep-codex");
+    expect(out.selectedTraceId).toBe("trace-grandchild-only");
     expect(out.selectedSpanId).toBeNull();
   });
 });
