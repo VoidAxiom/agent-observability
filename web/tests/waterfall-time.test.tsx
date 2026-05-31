@@ -312,6 +312,51 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
     expect(container.querySelectorAll('text[data-absolute-tick="true"]').length).toBe(0);
   });
 
+  it("collapses the axis height when no absolute-time row will render — bars start ~12px higher (round-4 P3)", () => {
+    // Compare a normal trace (axis 36px, includes the absolute row) vs a
+    // trace where every Timestamp fails to parse (axis 24px, only the
+    // relative-tick row renders). Round-4 finding: the axis was bumped
+    // to 36px unconditionally, leaving 12px of empty space above the
+    // first bar when no absolute labels render.
+    const normalSpans = smallTrace();
+    const normalRender = render(
+      <Waterfall
+        spans={normalSpans}
+        selectedSpanId={null}
+        onSelect={() => undefined}
+        nowMs={BASE_START_MS + 10_000}
+        widthOverride={1200}
+      />,
+    );
+    const normalRoot = normalRender.container.querySelector(
+      'g[data-span-id$="root"] rect.voi-waterfall-bar',
+    );
+    const normalY = Number(normalRoot?.getAttribute("y") ?? "0");
+    normalRender.unmount();
+
+    const noTimestampSpans = computeTreeOrder([
+      span({ spanId: "root", startOffsetMs: 0, durationMs: 1000, badTimestamp: true }),
+    ]);
+    const noTsRender = render(
+      <Waterfall
+        spans={noTimestampSpans}
+        selectedSpanId={null}
+        onSelect={() => undefined}
+        nowMs={BASE_START_MS + 10_000}
+        widthOverride={1200}
+      />,
+    );
+    const noTsRoot = noTsRender.container.querySelector(
+      'g[data-span-id$="root"] rect.voi-waterfall-bar',
+    );
+    const noTsY = Number(noTsRoot?.getAttribute("y") ?? "0");
+    noTsRender.unmount();
+
+    // The no-Timestamp render should start the first bar 12px higher
+    // (axis collapsed from 36 -> 24).
+    expect(normalY - noTsY).toBe(12);
+  });
+
   it("axis emits zero absolute tick labels when traceStartMs is unparseable", () => {
     const spans = computeTreeOrder([
       span({ spanId: "root", startOffsetMs: 0, durationMs: 1000, badTimestamp: true }),

@@ -394,11 +394,19 @@ describe("DetailsPane — SESSION mode sentinel guard (VOI-389 P1 follow-up)", (
       lastActivity: -8.64e15,
     });
     const { container } = render(<DetailsPane span={null} trace={null} session={s} nowMs={Date.now()} />);
-    const lastActivityValue = Array.from(container.querySelectorAll("span"))
+    // Locate the lastActivity MiniStat div (the parent of the
+    // "// last_activity" label). previousElementSibling targets the
+    // PREVIOUS MiniStat (traces) — wrong element; the value span lives
+    // INSIDE this MiniStat. Use firstElementChild to get the value
+    // span. Claude /code-review round-4 P2 2026-05-31.
+    const lastActivityMiniStat = Array.from(container.querySelectorAll("span"))
       .find((el) => el.textContent === "// last_activity")
       ?.parentElement;
-    expect(lastActivityValue?.previousElementSibling?.textContent ?? "").not.toContain("8640000000000");
-    expect(lastActivityValue?.getAttribute("title") ?? "").toBe("last activity unknown");
+    expect(lastActivityMiniStat).toBeDefined();
+    const valueSpan = lastActivityMiniStat!.firstElementChild;
+    expect(valueSpan?.textContent ?? "").toBe("--");
+    expect(valueSpan?.textContent ?? "").not.toContain("8640000000000");
+    expect(lastActivityMiniStat!.getAttribute("title") ?? "").toBe("last activity unknown");
     expect(container.textContent ?? "").not.toContain("8640000000000");
   });
 });

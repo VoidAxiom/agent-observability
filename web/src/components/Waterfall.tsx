@@ -53,11 +53,15 @@ export interface WaterfallProps {
 const ROW_HEIGHT = 24;
 const BAR_HEIGHT = 16;
 const BAR_Y_OFFSET = (ROW_HEIGHT - BAR_HEIGHT) / 2;
-// VOI-389: bumped from 24 -> 36 to make room for the absolute EST/EDT
-// tick labels above the existing relative-duration labels (e.g.
-// "10:32:47 AM EDT" on the top row, "200ms" on the bottom row at each
-// major tick).
-const TIME_AXIS_HEIGHT = 36;
+// Base axis height for the relative-duration tick row only. When the
+// absolute EST/EDT row is also rendered (VOI-389) we add the extra
+// label-row height below; otherwise the first bar sits flush below
+// this baseline and we don't reserve empty space for a row that
+// won't appear (e.g. every Timestamp failed to parse, or innerWidth
+// is too narrow for any absolute label per the 200px slot rule).
+// Claude /code-review round-4 P3 2026-05-31.
+const TIME_AXIS_HEIGHT_RELATIVE = 24;
+const TIME_AXIS_HEIGHT_WITH_ABSOLUTE = 36;
 const LEFT_GUTTER = 0;
 const RIGHT_PAD = 8;
 const MIN_BAR_WIDTH = 1;
@@ -136,9 +140,24 @@ export function Waterfall({
 
   const innerWidth = Math.max(0, measuredWidth - LEFT_GUTTER - RIGHT_PAD);
 
+  // Determine whether the absolute EST/EDT label row will render at all
+  // BEFORE buildLayout so the same axis height drives bar Y and the
+  // SVG geometry. Conditions match the gates inside TimeAxis below.
+  // VOI-389: claude /code-review round-4 P3 2026-05-31.
+  const willShowAbsoluteRow = useMemo(() => {
+    if (Math.floor(innerWidth / 200) <= 0) return false;
+    for (const s of spans) {
+      if (parseTimestamp(s.Timestamp) !== null) return true;
+    }
+    return false;
+  }, [spans, innerWidth]);
+  const axisHeight = willShowAbsoluteRow
+    ? TIME_AXIS_HEIGHT_WITH_ABSOLUTE
+    : TIME_AXIS_HEIGHT_RELATIVE;
+
   const layout = useMemo(
-    () => buildLayout(spans, innerWidth, nowMs),
-    [spans, innerWidth, nowMs],
+    () => buildLayout(spans, innerWidth, nowMs, axisHeight),
+    [spans, innerWidth, nowMs, axisHeight],
   );
 
   const ancestorSet = useMemo(() => {
@@ -162,7 +181,7 @@ export function Waterfall({
   // reserving a row for it leaves a phantom empty band at the bottom of
   // the SVG with no matching bar.
   const totalHeight =
-    TIME_AXIS_HEIGHT + layout.bars.length * ROW_HEIGHT + BAR_Y_OFFSET;
+    axisHeight + layout.bars.length * ROW_HEIGHT + BAR_Y_OFFSET;
 
   return (
     <section
@@ -184,7 +203,7 @@ export function Waterfall({
             innerWidth={innerWidth}
             durationMs={layout.durationMs}
             originX={LEFT_GUTTER}
-            height={TIME_AXIS_HEIGHT}
+            height={axisHeight}
             totalHeight={totalHeight}
             traceStartMs={layout.traceStartMs}
           />
@@ -242,6 +261,7 @@ function buildLayout(
   spans: SpanRow[],
   innerWidth: number,
   nowMs: number,
+  axisHeight: number,
 ): LayoutResult {
   if (spans.length === 0 || innerWidth <= 0) {
     return { bars: [], durationMs: 0, crossEdges: [], traceStartMs: Number.NaN };
@@ -351,7 +371,7 @@ function buildLayout(
       spanId: id,
       rowIndex: laneIndex,
       x: LEFT_GUTTER + clampedX,
-      y: TIME_AXIS_HEIGHT + laneIndex * ROW_HEIGHT + BAR_Y_OFFSET,
+      y: axisHeight + laneIndex * ROW_HEIGHT + BAR_Y_OFFSET,
       width: visibleWidth,
       family,
       accent,
@@ -380,7 +400,7 @@ function buildLayout(
       spanId: id,
       rowIndex: laneIndex,
       x: LEFT_GUTTER,
-      y: TIME_AXIS_HEIGHT + laneIndex * ROW_HEIGHT + BAR_Y_OFFSET,
+      y: axisHeight + laneIndex * ROW_HEIGHT + BAR_Y_OFFSET,
       width: MIN_BAR_WIDTH,
       family,
       accent,
@@ -630,15 +650,15 @@ function TimeAxis({
   // on traces whose N wasn't a multiple of K. Claude /code-review
   // round-3 P3 2026-05-31.
   const majorTicks = ticks.filter((t) => t.major);
-  const absoluteIdxSet = new Set<number>();
+  const absoluteMsSet = new Set<number>();
   if (showAbsoluteLabels && majorTicks.length > 0) {
     const labelCount = Math.min(maxAbsoluteLabels, majorTicks.length);
     if (labelCount === 1) {
-      absoluteIdxSet.add(majorTicks[0]!.ms);
+      absoluteMsSet.add(majorTicks[0]!.ms);
     } else {
       for (let i = 0; i < labelCount; i += 1) {
         const idx = Math.round((i * (majorTicks.length - 1)) / (labelCount - 1));
-        absoluteIdxSet.add(majorTicks[idx]!.ms);
+        absoluteMsSet.add(majorTicks[idx]!.ms);
       }
     }
   }
@@ -647,7 +667,7 @@ function TimeAxis({
     <g aria-hidden="true">
       {ticks.map(({ ms, major }, idx) => {
         const x = originX + (ms / durationMs) * innerWidth;
-        const showAbsolute = major && absoluteIdxSet.has(ms);
+        const showAbsolute = major && absoluteMsSet.has(ms);
         return (
           <g key={`tick-${idx}-${ms}`}>
             <line

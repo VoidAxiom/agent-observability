@@ -238,12 +238,12 @@ function SessionRow({
   // Sentinel-guard the relative age: without it,
   //   lastActivity === -8.64e15 → ageSeconds ≈ 8.64e12 → title leaks
   //   "last_activity -- (8640000000000s ago)".
-  // StatusDot also reads this — pass 0 when the activity is unknown
-  // so its tooltip says "0s ago" rather than the same garbage value.
-  // Claude /code-review P1 2026-05-31.
+  // StatusDot accepts `null` to render "last activity unknown" — passing
+  // 0 would say "0s ago" and contradict the row-level "unknown" message
+  // (Claude /code-review rounds 2 + 4 2026-05-31).
   const lastActivityAgeSeconds = hasAbsoluteTime
     ? Math.max(0, Math.round((nowMs - node.lastActivity) / 1000))
-    : 0;
+    : null;
   const lastActivityTitle = hasAbsoluteTime
     ? `last_activity ${formatAbsoluteEstWithDate(node.lastActivity)} (${lastActivityAgeSeconds}s ago)`
     : "last_activity unknown";
@@ -411,7 +411,15 @@ interface StatusDotProps {
   status: ActivityStatus;
   hasError: boolean;
   accent: string;
-  ageSeconds: number;
+  /**
+   * Relative-seconds age, or `null` when the underlying lastActivity is
+   * the DISTANT_PAST sentinel. `null` switches the tooltip from
+   * "<state>, last activity Ns ago" to "<state>, last activity
+   * unknown" so the dot's hover doesn't contradict the row-level
+   * "last_activity unknown" message. Claude /code-review round-4 P2
+   * 2026-05-31.
+   */
+  ageSeconds: number | null;
 }
 
 function StatusDot({ status, hasError, accent, ageSeconds }: StatusDotProps) {
@@ -436,7 +444,10 @@ function StatusDot({ status, hasError, accent, ageSeconds }: StatusDotProps) {
   } else {
     label = "stale";
   }
-  const tooltipText = `${label}, last activity ${ageSeconds}s ago`;
+  const tooltipText =
+    ageSeconds === null
+      ? `${label}, last activity unknown`
+      : `${label}, last activity ${ageSeconds}s ago`;
   return (
     <span
       aria-label={label}

@@ -356,6 +356,29 @@ describe("SessionSidebar", () => {
     expect(labelTooltip!).toContain("5s ago");
   });
 
+  it("StatusDot tooltip says 'last activity unknown' instead of '0s ago' when time is sentinel (round-4 P2)", () => {
+    // Without the null propagation the StatusDot tooltip read
+    // "stale, last activity 0s ago" while the row label said
+    // "last_activity unknown" — two contradictory recency claims for
+    // the same session. Now the dot says "unknown" too.
+    const s = makeSession({ id: "no-time", serviceName: "claude-code" });
+    s.lastActivity = -8.64e15;
+    const { container } = render(
+      <SessionSidebar
+        sessions={[s]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
+        nowMs={Date.now()}
+      />,
+    );
+    const row = container.querySelector('[data-session-id="no-time"]') as HTMLElement;
+    const dot = row.querySelector('[role="img"]') as HTMLElement;
+    expect(dot.getAttribute("title") ?? "").toBe("stale, last activity unknown");
+    expect(dot.getAttribute("title") ?? "").not.toContain("0s ago");
+  });
+
   it("emits exactly ONE data-tooltip per row — no nested CSS popovers (Claude /code-review round-3 P2)", () => {
     // Regression for the nested-data-tooltip stacking bug. The CSS
     // :hover pseudo-class applies to ancestors of the hovered element,
