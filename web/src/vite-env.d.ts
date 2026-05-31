@@ -15,9 +15,12 @@ interface ImportMetaEnv {
   readonly VITE_CH_USERNAME?: string;
   readonly VITE_CH_PASSWORD?: string;
   // Polling-query window + safety ceiling (VOI-382). Both positive
-  // integers; defaults are 1h window / 50000-row ceiling. Window bounds
-  // how far back the SessionSidebar's polling SELECT looks; ceiling caps
-  // the row count so a silent table can never load the entire history.
+  // integers; defaults are 1h window / 250000-row ceiling (sized so the
+  // truncation chip reads as an alarm, not background noise, at the
+  // documented ~67 spans/sec sustained ingest — see clickhouse.ts
+  // DEFAULT_LIMIT_CEILING for the rationale). Window bounds how far
+  // back the SessionSidebar's polling SELECT looks; ceiling caps the
+  // row count so a silent table can never load the entire history.
   // Both prefixes honored (CH_* repo-standard wins; VITE_CH_* fallback),
   // mirroring the connection-config loader's convention.
   readonly CH_QUERY_WINDOW_HOURS?: string;
