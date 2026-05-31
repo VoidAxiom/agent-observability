@@ -95,12 +95,13 @@ fi
 stamped='no'
 run_id='-'
 if should_stamp_codex_exec "$@"; then
-  if [[ "${OTEL_RESOURCE_ATTRIBUTES:-}" == *"agent.session.id="* ]]; then
+  attrs_wrapped=",${OTEL_RESOURCE_ATTRIBUTES:-},"
+  if [[ "$attrs_wrapped" == *",agent.session.id="* ]]; then
     stamped='already'
   else
     # shellcheck source=/dev/null
     . "$SHIM_DIR/codex-otel-attrs.sh"
-    run_id="codex-shim-$(od -An -tx1 -N4 /dev/urandom | tr -d ' \n')"
+    run_id="codex-shim-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
     OTEL_RESOURCE_ATTRIBUTES="$(build_codex_otel_resource_attrs "$run_id")"
     export OTEL_RESOURCE_ATTRIBUTES
     stamped='yes'

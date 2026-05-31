@@ -99,7 +99,7 @@ stdout="$tmp/stdout"
 stderr="$tmp/stderr"
 if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" exec hello; then
   out="$(<"$stdout")"
-  assert_matches 'case2 exec stamps codex-shim id' "$out" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+  assert_matches 'case2 exec stamps codex-shim id' "$out" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
   assert_contains 'case2 exec stamps agent kind' "$out" 'agent.kind=codex_exec'
   assert_not_contains 'case2 exec no parent session' "$out" 'agent.parent.session.id='
   assert_not_contains 'case2 exec no parent span' "$out" 'agent.parent.span.id='
@@ -116,7 +116,7 @@ traceparent='00-0123456789abcdef0123456789abcdef-fedcba9876543210-01'
 session_id='claude-sess-voi-390'
 if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" TRACEPARENT="$traceparent" CLAUDE_CODE_SESSION_ID="$session_id" bash "$ROOT/scripts/codex-shim.sh" exec hello; then
   out="$(<"$stdout")"
-  assert_matches 'case3 full env stamps codex-shim id' "$out" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+  assert_matches 'case3 full env stamps codex-shim id' "$out" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
   assert_contains 'case3 full env stamps kind' "$out" 'agent.kind=codex_exec'
   assert_contains 'case3 full env stamps parent session' "$out" "agent.parent.session.id=$session_id"
   assert_contains 'case3 full env stamps parent span' "$out" 'agent.parent.span.id=fedcba9876543210'
@@ -179,7 +179,7 @@ make_fake_codex "$tmp/realbin"
 stdout="$tmp/stdout"
 stderr="$tmp/stderr"
 if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" -c model=foo exec hello; then
-  assert_matches 'case7a -c before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+  assert_matches 'case7a -c before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
 else
   fail_case 'case7a -c before exec' "unexpected exit; stderr=$(<"$stderr")"
 fi
@@ -190,7 +190,7 @@ make_fake_codex "$tmp/realbin"
 stdout="$tmp/stdout"
 stderr="$tmp/stderr"
 if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" --strict-config exec hello; then
-  assert_matches 'case7b long flag before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+  assert_matches 'case7b long flag before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
 else
   fail_case 'case7b long flag before exec' "unexpected exit; stderr=$(<"$stderr")"
 fi
@@ -212,7 +212,7 @@ make_fake_codex "$tmp/realbin"
 stdout="$tmp/stdout"
 stderr="$tmp/stderr"
 if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" exec --help; then
-  assert_matches 'case7d exec help stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+  assert_matches 'case7d exec help stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
 else
   fail_case 'case7d exec help' "unexpected exit; stderr=$(<"$stderr")"
 fi
@@ -223,7 +223,7 @@ make_fake_codex "$tmp/realbin"
 stdout="$tmp/stdout"
 stderr="$tmp/stderr"
 if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" -p production exec hello; then
-  assert_matches 'case7e -p before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+  assert_matches 'case7e -p before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
 else
   fail_case 'case7e -p before exec' "unexpected exit; stderr=$(<"$stderr")"
 fi
@@ -234,7 +234,7 @@ make_fake_codex "$tmp/realbin"
 stdout="$tmp/stdout"
 stderr="$tmp/stderr"
 if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" --profile production exec hello; then
-  assert_matches 'case7f --profile before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+  assert_matches 'case7f --profile before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
 else
   fail_case 'case7f --profile before exec' "unexpected exit; stderr=$(<"$stderr")"
 fi
@@ -245,7 +245,7 @@ make_fake_codex "$tmp/realbin"
 stdout="$tmp/stdout"
 stderr="$tmp/stderr"
 if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" -m gpt-5.4 exec hello; then
-  assert_matches 'case7g -m before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+  assert_matches 'case7g -m before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
 else
   fail_case 'case7g -m before exec' "unexpected exit; stderr=$(<"$stderr")"
 fi
@@ -256,7 +256,7 @@ make_fake_codex "$tmp/realbin"
 stdout="$tmp/stdout"
 stderr="$tmp/stderr"
 if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" --model gpt-5.4 exec hello; then
-  assert_matches 'case7h --model before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+  assert_matches 'case7h --model before exec stamps' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
 else
   fail_case 'case7h --model before exec' "unexpected exit; stderr=$(<"$stderr")"
 fi
@@ -267,7 +267,7 @@ make_fake_codex "$tmp/realbin"
 stdout="$tmp/stdout"
 stderr="$tmp/stderr"
 if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" bash "$ROOT/scripts/codex-shim.sh" -p production -m gpt-5.4 exec hello; then
-  assert_matches 'case7i profile and model before exec stamp' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{8}'
+  assert_matches 'case7i profile and model before exec stamp' "$(<"$stdout")" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
 else
   fail_case 'case7i profile and model before exec' "unexpected exit; stderr=$(<"$stderr")"
 fi
@@ -412,6 +412,48 @@ else
   else
     fail_case 'case14 existing attrs wrong symlink preserved' 'wrong symlink target was overwritten'
   fi
+fi
+
+# 15. Parent session attr is not mistaken for already stamped.
+tmp="$(new_case_dir)"
+make_fake_codex "$tmp/realbin"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+parent_attrs='agent.parent.session.id=parent-X'
+if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" OTEL_RESOURCE_ATTRIBUTES="$parent_attrs" bash "$ROOT/scripts/codex-shim.sh" exec hello; then
+  out="$(<"$stdout")"
+  assert_matches 'case15 parent session attr still stamps id' "$out" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
+  assert_contains 'case15 parent session attr preserved' "$out" 'agent.parent.session.id=parent-X'
+else
+  fail_case 'case15 parent session attr boundary' "unexpected exit; stderr=$(<"$stderr")"
+fi
+
+# 16. Prefixed session attr key is not mistaken for already stamped.
+tmp="$(new_case_dir)"
+make_fake_codex "$tmp/realbin"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+prefixed_attrs='foo.agent.session.id=bar'
+if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" OTEL_RESOURCE_ATTRIBUTES="$prefixed_attrs" bash "$ROOT/scripts/codex-shim.sh" exec hello; then
+  out="$(<"$stdout")"
+  assert_matches 'case16 prefixed session attr still stamps id' "$out" 'agent\.session\.id=codex-shim-[0-9a-f]{16}'
+  assert_contains 'case16 prefixed session attr preserved' "$out" 'foo.agent.session.id=bar'
+else
+  fail_case 'case16 prefixed session attr boundary' "unexpected exit; stderr=$(<"$stderr")"
+fi
+
+# 17. Existing session attr is detected after the first attr.
+tmp="$(new_case_dir)"
+make_fake_codex "$tmp/realbin"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+second_attr_stamped='service.name=foo,agent.session.id=existing-X'
+if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/realbin:$BASE_PATH" OTEL_RESOURCE_ATTRIBUTES="$second_attr_stamped" bash "$ROOT/scripts/codex-shim.sh" exec hello; then
+  out="$(<"$stdout")"
+  assert_contains 'case17 second attr already stamped unchanged' "$out" "OTEL_RESOURCE_ATTRIBUTES=$second_attr_stamped"
+  assert_not_contains 'case17 second attr already stamped no new id' "$out" 'codex-shim-'
+else
+  fail_case 'case17 second attr already stamped boundary' "unexpected exit; stderr=$(<"$stderr")"
 fi
 
 if [[ "$FAIL" -ne 0 ]]; then
