@@ -492,15 +492,16 @@ function WaterfallBar({
   // can correlate a bar's hover position to wall-clock time without
   // popping out to the inspector. The formatter already emits the
   // " EST"/" EDT" suffix; we don't double-append. For in-flight spans
-  // (StatusCode UNSET, Duration === 0) the "ended" line would equal
-  // the "started" line — a lie the operator would trust because the
-  // bar is animated as running but the hover claims it finished
-  // instantly. Print "(still running)" instead. Claude /code-review
-  // P1 2026-05-31.
+  // (any reason isRunning fires — Duration===0 OR Duration>0 within
+  // polling-fresh window) the "ended" line would lie because the bar
+  // is animated as running. Print "(still running)" instead. The guard
+  // is `bar.isRunning` ALONE — gating on Duration===0 too undercovers
+  // the polling-window branch and leaves the pulsing bar/static-end
+  // contradiction in place. Claude /code-review rounds 2-3 2026-05-31.
   let titleText: string;
   if (bar.noTimestamp) {
     titleText = `${label} — no timestamp (rendered as synthetic minimum-width bar)\nstarted --\nended --`;
-  } else if (bar.isRunning && bar.span.Duration === 0) {
+  } else if (bar.isRunning) {
     titleText = `${label}\nstarted ${formatAbsoluteEstWithMs(bar.startMs)}\nended (still running)`;
   } else {
     titleText = `${label}\nstarted ${formatAbsoluteEstWithMs(bar.startMs)}\nended ${formatAbsoluteEstWithMs(bar.endMs)}`;
@@ -621,19 +622,24 @@ function TimeAxis({
   // permits 3-5 labels at typical widths; at sub-200px the relative-
   // duration ticks still render. Claude /code-review P2 2026-05-31.
   const maxAbsoluteLabels = Math.min(5, Math.floor(innerWidth / 200));
-  // Pick evenly-spaced major-tick indices via floor(i * N / K) — this
-  // distributes K labels across the full N-tick axis. The previous
-  // floor(N/K) stride collapsed to 1 when N was between K+1 and 2K-1
-  // (e.g. innerWidth=1100 → K=5; N=8 → stride=1 → first 5 indices
-  // 0..4 — clustering at the left edge while the right half stays
-  // blank). Codex /code-review P1 2026-05-31.
+  // Pick evenly-spaced major-tick indices that anchor both endpoints:
+  // for K labels and N majors, picks indices round(i * (N-1) / (K-1))
+  // so index 0 → first major and index K-1 → last major; intermediate
+  // labels space evenly between. floor(i*N/K) (round-2 fix) skipped
+  // the last major entirely, leaving up to 20% of the right edge blank
+  // on traces whose N wasn't a multiple of K. Claude /code-review
+  // round-3 P3 2026-05-31.
   const majorTicks = ticks.filter((t) => t.major);
   const absoluteIdxSet = new Set<number>();
   if (showAbsoluteLabels && majorTicks.length > 0) {
     const labelCount = Math.min(maxAbsoluteLabels, majorTicks.length);
-    for (let i = 0; i < labelCount; i += 1) {
-      const idx = Math.floor((i * majorTicks.length) / labelCount);
-      absoluteIdxSet.add(majorTicks[idx]!.ms);
+    if (labelCount === 1) {
+      absoluteIdxSet.add(majorTicks[0]!.ms);
+    } else {
+      for (let i = 0; i < labelCount; i += 1) {
+        const idx = Math.round((i * (majorTicks.length - 1)) / (labelCount - 1));
+        absoluteIdxSet.add(majorTicks[idx]!.ms);
+      }
     }
   }
 

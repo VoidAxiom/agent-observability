@@ -92,6 +92,36 @@ function runningSpan(): SpanRow[] {
   ];
 }
 
+/**
+ * Polling-window in-flight: StatusCode UNSET + Duration > 0 + endMs
+ * within nowMs-5s. buildLayout marks this as isRunning too (case b of
+ * the predicate). The round-2 patch carved out only the Duration===0
+ * branch and left this case rendering "ended <real time>" — Claude
+ * /code-review round-3 caught the gap.
+ */
+function pollingInFlightSpan(): SpanRow[] {
+  return [
+    {
+      TraceId: "trace-polling",
+      SpanId: "polling",
+      ParentSpanId: "",
+      SpanName: "claude_code.tool",
+      Timestamp: new Date(BASE_START_MS).toISOString().replace("Z", "000000Z"),
+      ServiceName: "claude-code",
+      StatusCode: "",
+      Duration: 2_500_000_000, // 2.5s
+      AgentProject: "p",
+      AgentSessionId: "s",
+      AgentRunId: "r",
+      SessionId: "sess",
+      ProjectName: "proj",
+      ResourceAttributesRaw: {},
+      SpanAttributesRaw: {},
+      depth: 0,
+    },
+  ];
+}
+
 describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
   it("per-bar tooltip includes absolute EST start/end times with ms precision", () => {
     const spans = smallTrace();
@@ -100,7 +130,7 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
         spans={spans}
         selectedSpanId={null}
         onSelect={() => undefined}
-        nowMs={BASE_START_MS + 5000}
+        nowMs={BASE_START_MS + 10_000}
         widthOverride={1200}
       />,
     );
@@ -124,7 +154,7 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
         spans={spans}
         selectedSpanId={null}
         onSelect={() => undefined}
-        nowMs={BASE_START_MS + 5000}
+        nowMs={BASE_START_MS + 10_000}
         widthOverride={1200}
       />,
     );
@@ -134,6 +164,29 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
     const title = rootGroup!.querySelector("title")?.textContent ?? "";
     expect(title).toContain("started --");
     expect(title).toContain("ended --");
+  });
+
+  it("polling-window in-flight span (Duration > 0, fresh end) also reads 'ended (still running)' — guard is bar.isRunning, not Duration===0 (round-3 P2)", () => {
+    // The round-2 patch undercovered the polling-window branch: a span
+    // with StatusCode UNSET, Duration > 0, and endMs within nowMs-5s
+    // is treated as running everywhere else but the tooltip used to
+    // print "ended <real time>". Guard collapses to `bar.isRunning`.
+    const spans = pollingInFlightSpan();
+    const { container } = render(
+      <Waterfall
+        spans={spans}
+        selectedSpanId={null}
+        onSelect={() => undefined}
+        // nowMs = startMs + 4s; endMs = startMs + 2.5s; 4 - 2.5 = 1.5s
+        // < 5s polling-fresh window → isRunning.
+        nowMs={BASE_START_MS + 4000}
+        widthOverride={1200}
+      />,
+    );
+    const group = container.querySelector('g[data-span-id$="polling"]');
+    const title = group?.querySelector("title")?.textContent ?? "";
+    expect(title).toContain("ended (still running)");
+    expect(title).not.toMatch(/ended \d{1,2}:\d{2}:\d{2}\.\d{3} (AM|PM)/);
   });
 
   it("in-flight (running) span tooltip reads 'ended (still running)' instead of duplicating the start time", () => {
@@ -147,7 +200,7 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
         spans={spans}
         selectedSpanId={null}
         onSelect={() => undefined}
-        nowMs={BASE_START_MS + 5000}
+        nowMs={BASE_START_MS + 10_000}
         widthOverride={1200}
       />,
     );
@@ -157,6 +210,41 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
     expect(title).toContain("ended (still running)");
     // The "ended HH:MM:SS.mmm AM/PM EDT" form must NOT appear.
     expect(title).not.toMatch(/ended \d{1,2}:\d{2}:\d{2}\.\d{3} (AM|PM)/);
+  });
+
+  it("absolute axis labels anchor both endpoints — leftmost label at first major, rightmost at last major (round-3 P3)", () => {
+    // round-2 floor(i*N/K) left up to 20% of the right edge blank
+    // (e.g. K=5, N=11 → indices {0,2,4,6,8}; last absolute label at
+    // 80% of axis). round-3 uses round(i*(N-1)/(K-1)) so index 0 →
+    // first major and K-1 → last major; gaps in between stay even.
+    const spans = smallTrace();
+    const { container } = render(
+      <Waterfall
+        spans={spans}
+        selectedSpanId={null}
+        onSelect={() => undefined}
+        nowMs={BASE_START_MS + 10_000}
+        widthOverride={1200}
+      />,
+    );
+    const allMajorTicks = container.querySelectorAll(
+      'text.voi-waterfall-tick-label:not([data-absolute-tick])',
+    );
+    const absoluteTicks = container.querySelectorAll('text[data-absolute-tick="true"]');
+    expect(allMajorTicks.length).toBeGreaterThanOrEqual(2);
+    expect(absoluteTicks.length).toBeGreaterThanOrEqual(2);
+    const majorXs = Array.from(allMajorTicks)
+      .map((t) => Number((t as SVGTextElement).getAttribute("x") ?? "0"))
+      .sort((a, b) => a - b);
+    const absXs = Array.from(absoluteTicks)
+      .map((t) => Number((t as SVGTextElement).getAttribute("x") ?? "0"))
+      .sort((a, b) => a - b);
+    // Leftmost absolute label sits at the leftmost major's x.
+    expect(absXs[0]).toBe(majorXs[0]);
+    // Rightmost absolute label sits at the rightmost major's x — not
+    // 20% short of it. The round-2 fix had absXs[absXs.length-1] ===
+    // majorXs[Math.floor(0.8 * majorXs.length)] (≈ 80% of width).
+    expect(absXs[absXs.length - 1]).toBe(majorXs[majorXs.length - 1]);
   });
 
   it("absolute axis labels are evenly spread across the full axis, not clustered at the left", () => {
@@ -171,7 +259,7 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
         spans={spans}
         selectedSpanId={null}
         onSelect={() => undefined}
-        nowMs={BASE_START_MS + 5000}
+        nowMs={BASE_START_MS + 10_000}
         widthOverride={1200}
       />,
     );
@@ -193,7 +281,7 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
         spans={spans}
         selectedSpanId={null}
         onSelect={() => undefined}
-        nowMs={BASE_START_MS + 5000}
+        nowMs={BASE_START_MS + 10_000}
         widthOverride={1200}
       />,
     );
@@ -217,7 +305,7 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
         spans={spans}
         selectedSpanId={null}
         onSelect={() => undefined}
-        nowMs={BASE_START_MS + 5000}
+        nowMs={BASE_START_MS + 10_000}
         widthOverride={180}
       />,
     );
@@ -233,7 +321,7 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
         spans={spans}
         selectedSpanId={null}
         onSelect={() => undefined}
-        nowMs={BASE_START_MS + 5000}
+        nowMs={BASE_START_MS + 10_000}
         widthOverride={1200}
       />,
     );
@@ -254,7 +342,7 @@ describe("WaterfallShell — VOI-389 header chip absolute start", () => {
         durationSeconds={1.234}
         selectedSpanId={null}
         onSelect={() => undefined}
-        nowMs={BASE_START_MS + 5000}
+        nowMs={BASE_START_MS + 10_000}
         collapsed={false}
         onToggleCollapsed={() => undefined}
       />,
@@ -276,7 +364,7 @@ describe("WaterfallShell — VOI-389 header chip absolute start", () => {
         durationSeconds={0}
         selectedSpanId={null}
         onSelect={() => undefined}
-        nowMs={BASE_START_MS + 5000}
+        nowMs={BASE_START_MS + 10_000}
         collapsed={false}
         onToggleCollapsed={() => undefined}
       />,

@@ -32,9 +32,8 @@ const HMS_FORMATTER = new Intl.DateTimeFormat("en-US", {
 });
 
 // fractionalSecondDigits is the modern Intl knob for sub-second precision.
-// jsdom + Node 22's V8 honour it; if a future runtime drops it, the test
-// suite's "includes 3 fractional second digits" case will catch it and we
-// fall back to the splice path below.
+// jsdom + Node 22's V8 honour it; the format-time test asserts the ".mmm"
+// fragment appears so a future runtime regression lights up immediately.
 const HMS_MS_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: TZ,
   hour: "numeric",

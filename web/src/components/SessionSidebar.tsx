@@ -331,14 +331,14 @@ function SessionRow({
         data-session-id={node.id}
         data-kind={node.kind}
         data-depth={depth}
-        // Use the project's data-tooltip channel rather than a native
-        // `title` — the inner label span already carries
-        // data-tooltip="service.name=…", so a native title here would
-        // produce two-tier flicker (immediate CSS popover on the inner
-        // span + delayed browser tooltip on the outer button). The
-        // structural attribute lets the existing CSS handle both, and
-        // remains discoverable to screen-readers + tests.
-        data-tooltip={lastActivityTitle}
+        // Wall-clock hover text rides on the inner label span's
+        // data-tooltip below — a second data-tooltip on this button
+        // would stack two CSS popovers on hover (inner :hover
+        // propagates up the ancestor chain so both ::after rules
+        // fire). Claude /code-review round-3 P2 2026-05-31. The
+        // attribute below is a plain data hook for tests / screen-
+        // readers, NOT a CSS tooltip trigger.
+        data-last-activity={lastActivityTitle}
         style={rowStyle}
       >
         {selected ? (
@@ -362,7 +362,11 @@ function SessionRow({
           />
           <span
             style={sessionLabelStyle}
-            data-tooltip={`service.name=${node.serviceName}`}
+            // Single CSS-tooltip channel carries both the existing
+            // service.name signal and the new wall-clock info so the
+            // row gets ONE popover on hover (Claude /code-review
+            // round-3 P2 2026-05-31).
+            data-tooltip={`service.name=${node.serviceName} · ${lastActivityTitle}`}
           >
             {node.displayLabel}
           </span>
