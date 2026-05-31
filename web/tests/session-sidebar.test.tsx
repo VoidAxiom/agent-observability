@@ -168,6 +168,46 @@ describe("SessionSidebar", () => {
     expect(screen.getByLabelText("error")).toBeDefined();
   });
 
+  it("parent row surfaces error when ONLY a descendant has errored (codex P2 2026-05-31)", () => {
+    // descendantHasError is rolled up by finalizeSubtree + sessionsFilter
+    // so a collapsed parent's status dot still tells the operator that
+    // work failed one level down. Without this, an error in a subagent
+    // or codex child stays silent behind the parent's normal dot.
+    const childErr: SessionGroup = {
+      ...makeSession({ id: "child", serviceName: "claude-code", hasError: true }),
+      kind: "subagent",
+      parentId: "parent",
+    };
+    const parent: SessionGroup = {
+      ...makeSession({ id: "parent", serviceName: "claude-code" }),
+      // Parent itself has no error; the rolled-up flag is what carries
+      // the failure signal up the tree.
+      hasError: false,
+      descendantHasError: true,
+      children: [childErr],
+    };
+    render(
+      <SessionSidebar
+        sessions={[parent]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
+        nowMs={Date.now()}
+      />,
+    );
+    // The parent row's status dot uses the error variant. The child is
+    // collapsed by default, so the only error dot visible without
+    // expansion is the parent's — scope the assertion to the parent's
+    // own row.
+    const parentRow = document.querySelector(
+      '[data-session-id="parent"]',
+    ) as HTMLElement | null;
+    expect(parentRow).not.toBeNull();
+    const parentErrDot = parentRow!.querySelector('[aria-label="error"]');
+    expect(parentErrDot).not.toBeNull();
+  });
+
   it("error session dot uses --accent-2 (NOT magenta --accent-1) to avoid colliding with selection bar", () => {
     const sessions = [
       makeSession({ id: "s1", serviceName: "claude-code", hasError: true }),

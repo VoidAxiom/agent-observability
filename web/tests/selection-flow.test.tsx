@@ -421,6 +421,64 @@ describe("App selection flow", () => {
     expect(visibleSpanIds).not.toContain("claude-tracedispatch");
   });
 
+  it("Live header + tab counter count only SELF-active nodes (codex P2 2026-05-31)", () => {
+    // filterActive retains a stale claude root when a subagent descendant
+    // is still active so the operator can drill in via the parent. The
+    // header subtitle and the tab counter must count ONLY nodes whose own
+    // activityStatus === "active" — otherwise the totals disagree with
+    // the row status dots (a stale claude root rendered alongside its
+    // active child should be 1 active, not 2).
+    //
+    // Fixture: claude root last-active 10 min ago (stale), one subagent
+    // descendant last-active 30s ago (active). nowMs pinned at 00:11:00.
+    const rows: SpanRow[] = [
+      span({
+        SessionId: "sess-stale-root",
+        TraceId: "trace-A",
+        SpanId: "root",
+        SpanName: "claude_code.tool.bash",
+        Timestamp: "2026-01-01T00:01:00.000000000",
+      }),
+      span({
+        SessionId: "sess-stale-root",
+        TraceId: "trace-A",
+        SpanId: "dispatch",
+        ParentSpanId: "root",
+        SpanName: "claude_code.tool.task",
+        Timestamp: "2026-01-01T00:01:01.000000000",
+        SpanAttributesRaw: { subagent_type: "implementer" },
+      }),
+      span({
+        SessionId: "sess-stale-root",
+        TraceId: "trace-A",
+        SpanId: "sub-live",
+        ParentSpanId: "dispatch",
+        SpanName: "claude_code.tool.edit",
+        Timestamp: "2026-01-01T00:10:30.000000000",
+        SpanAttributesRaw: { agent_id: "sub-agent-live" },
+      }),
+    ];
+    mockState = {
+      sessions: groupSpans(rows),
+      // 30s after sub-live → child is active (≤5min); root last seen
+      // 10min ago → stale. nowMs = 00:11:00.
+      nowMs: Date.UTC(2026, 0, 1, 0, 11, 0),
+      error: null,
+      loading: false,
+      truncated: false,
+    };
+    render(<App />);
+
+    // Both root and child render in the sidebar (root retained as
+    // context for its active descendant), but the active count is 1.
+    const subtitle = screen.getByText(/^\/\/ live · \d+ of \d+ sessions active$/);
+    expect(subtitle.textContent).toBe("// live · 1 of 2 sessions active");
+
+    // The tab counter mirrors the subtitle's active count.
+    const liveBtn = screen.getByRole("button", { name: /Live/ });
+    expect(liveBtn.textContent).toContain("1");
+  });
+
   it("removing the selected session promotes the next-best deterministically", () => {
     setMock(fixtureRows());
     const { rerender } = render(<App />);

@@ -468,13 +468,17 @@ function findFirstDescendantAgentId(
   childrenByParent: Map<string, SpanRow[]>,
 ): string | null {
   const visited = new Set<string>();
-  // BFS via shift-from-front so the FIRST descendant (by timestamp order
-  // within each parent's children list, sorted below) wins — matches the
-  // docstring contract instead of whatever LIFO order DFS+Map iteration
-  // happens to produce. Claude /code-review P3 #7, 2026-05-31.
+  // BFS with a head-index pointer instead of Array.shift (O(n) per call
+  // — memmoves every remaining entry). On the 25k-span trace from the
+  // design doc evidence section the shift-based walker is O(n²) per
+  // dispatch span; head-index gives the same FIFO ordering in O(1)
+  // amortized (codex P2 2026-05-31). The first descendant (by Timestamp
+  // order within each parent's children list, pre-sorted at construction
+  // time by buildDispatchAgentIdMap) still wins per the docstring.
   const queue: SpanRow[] = [start];
-  while (queue.length > 0) {
-    const node = queue.shift()!;
+  let head = 0;
+  while (head < queue.length) {
+    const node = queue[head++]!;
     const key = globalSpanId(node);
     if (visited.has(key)) continue;
     visited.add(key);
@@ -482,9 +486,6 @@ function findFirstDescendantAgentId(
       const candidate = node.SpanAttributesRaw["agent_id"] ?? "";
       if (candidate !== "") return candidate;
     }
-    // childrenByParent is pre-sorted by Timestamp at construction time
-    // (buildDispatchAgentIdMap), so we can enqueue directly without
-    // re-sorting per dequeue.
     const children = childrenByParent.get(key);
     if (children) {
       for (const child of children) queue.push(child);
@@ -566,6 +567,14 @@ function walkToSubagentAncestor(
   subagentNodeByKey: Map<string, SessionNode>,
   subagentKey: (sessionId: string, agentId: string) => string,
 ): SessionNode | null {
+  // The lookup map is keyed by SpanId alone — codex stamps
+  // agent.parent.span.id without an accompanying agent.parent.trace.id,
+  // so we can't pre-scope by trace. SpanIds are 64-bit (16 hex) and
+  // collisions are rare but realistic across fixture replays, idempotent
+  // ingestion, and busy multi-trace windows. Guard against the collision
+  // case by rejecting any walker step whose row's SessionId doesn't match
+  // the codex's stamped parent session: a span from a DIFFERENT claude
+  // session can't be on the legitimate ancestry path (codex P2 2026-05-31).
   const visited = new Set<string>();
   let currentSpanId: string = startSpanId;
   let depth = 0;
@@ -575,6 +584,7 @@ function walkToSubagentAncestor(
     visited.add(currentSpanId);
     const row = spanBySpanId.get(currentSpanId);
     if (!row) return null;
+    if (row.SessionId !== parentSessionId) return null;
     const agentId = row.SpanAttributesRaw["agent_id"] ?? "";
     if (agentId !== "") {
       const subagent = subagentNodeByKey.get(

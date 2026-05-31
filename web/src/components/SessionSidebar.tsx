@@ -323,7 +323,13 @@ function SessionRow({
         <span style={rowTopLineStyle}>
           <StatusDot
             status={status}
-            hasError={node.hasError}
+            // VOI-386: own OR descendant error so a collapsed parent's
+            // status dot still surfaces an error one level down (codex P2
+            // 2026-05-31). descendantHasError is rolled up by
+            // finalizeSubtree + sessionsFilter to include the whole
+            // subtree, so the parent's dot turns red whenever any node
+            // under it failed.
+            hasError={node.hasError || node.descendantHasError}
             accent={accent}
             ageSeconds={lastActivityAgeSeconds}
           />
