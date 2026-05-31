@@ -615,7 +615,12 @@ function TimeAxis({
   const showAbsoluteLabels = Number.isFinite(traceStartMs);
   // Cap absolute-time labels at ~one per 200px (spec § "Axis ticks") so
   // we never paint overlapping HH:MM:SS strings on narrow viewports.
-  const maxAbsoluteLabels = Math.max(3, Math.min(5, Math.ceil(innerWidth / 200)));
+  // No lower floor — when the inner axis is too narrow to fit even one
+  // ~130px-wide "HH:MM:SS AM/PM EDT" label per ~200px slot, omit the
+  // absolute-time row entirely rather than crowding the axis. Spec
+  // permits 3-5 labels at typical widths; at sub-200px the relative-
+  // duration ticks still render. Claude /code-review P2 2026-05-31.
+  const maxAbsoluteLabels = Math.min(5, Math.floor(innerWidth / 200));
   // Pick evenly-spaced major-tick indices via floor(i * N / K) — this
   // distributes K labels across the full N-tick axis. The previous
   // floor(N/K) stride collapsed to 1 when N was between K+1 and 2K-1

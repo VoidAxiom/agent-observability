@@ -206,6 +206,24 @@ describe("Waterfall — VOI-389 absolute EST/EDT surfaces", () => {
     expect(text).toMatch(/^\d{1,2}:\d{2}:\d{2} (AM|PM) E[SD]T$/);
   });
 
+  it("omits the absolute-time axis row entirely when the viewport is too narrow for a single ~200px slot (Claude /code-review P2 2026-05-31)", () => {
+    // Below ~200px innerWidth the absolute label width (~110-130px for
+    // "HH:MM:SS AM EDT" at 10px mono) would overlap with adjacent
+    // labels. Cap collapses to 0 so the relative-duration ticks still
+    // render but the absolute row hides.
+    const spans = smallTrace();
+    const { container } = render(
+      <Waterfall
+        spans={spans}
+        selectedSpanId={null}
+        onSelect={() => undefined}
+        nowMs={BASE_START_MS + 5000}
+        widthOverride={180}
+      />,
+    );
+    expect(container.querySelectorAll('text[data-absolute-tick="true"]').length).toBe(0);
+  });
+
   it("axis emits zero absolute tick labels when traceStartMs is unparseable", () => {
     const spans = computeTreeOrder([
       span({ spanId: "root", startOffsetMs: 0, durationMs: 1000, badTimestamp: true }),
