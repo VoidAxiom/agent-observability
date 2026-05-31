@@ -43,6 +43,7 @@ let mockState: PolledSpansState = {
   nowMs: 0,
   error: null,
   loading: true,
+  truncated: false,
 };
 
 vi.mock("../src/lib/usePolledSpans", () => ({
@@ -54,7 +55,7 @@ import { App } from "../src/App";
 
 afterEach(() => {
   cleanup();
-  mockState = { sessions: [], nowMs: 0, error: null, loading: true };
+  mockState = { sessions: [], nowMs: 0, error: null, loading: true, truncated: false };
 });
 
 function span(o: Partial<SpanRow> & { SpanId: string; TraceId: string; SessionId: string }): SpanRow {
@@ -90,6 +91,7 @@ function setMock(rows: SpanRow[]): void {
     nowMs: Date.UTC(2026, 0, 1, 0, 1, 30),
     error: null,
     loading: false,
+    truncated: false,
   };
 }
 
@@ -120,7 +122,7 @@ function fixtureRows(): SpanRow[] {
 
 describe("App selection flow", () => {
   it("loading state shows the awaiting placeholder", () => {
-    mockState = { sessions: [], nowMs: 0, error: null, loading: true };
+    mockState = { sessions: [], nowMs: 0, error: null, loading: true, truncated: false };
     render(<App />);
     // Both the subtitle and the sidebar empty-state render the same comment
     // text during the awaiting-load state; at least one is sufficient signal.

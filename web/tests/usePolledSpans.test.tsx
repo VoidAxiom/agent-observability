@@ -10,7 +10,16 @@ import { describe, expect, it, vi } from "vitest";
 import { act, render, cleanup } from "@testing-library/react";
 import { useEffect } from "react";
 import { usePolledSpans } from "../src/lib/usePolledSpans";
+import type { FetchResult } from "../src/lib/clickhouse";
 import type { SpanRow } from "../src/lib/grouping";
+
+// Small helper so legacy tests that conceptually deal in "rows" can stay
+// readable while matching the FetchResult shape the hook now requires.
+// Tests that need to assert truncated semantics construct the literal
+// directly instead of going through here.
+function ok(rows: SpanRow[]): FetchResult {
+  return { rows, truncated: false, rawRowCount: rows.length };
+}
 
 function row(spanId: string, sessionId: string): SpanRow {
   return {
@@ -35,7 +44,7 @@ function row(spanId: string, sessionId: string): SpanRow {
 
 interface ProbeProps {
   intervalMs: number;
-  fetchImpl: () => Promise<SpanRow[]>;
+  fetchImpl: () => Promise<FetchResult>;
   onState: (state: ReturnType<typeof usePolledSpans>) => void;
 }
 
@@ -50,7 +59,7 @@ function Probe({ intervalMs, fetchImpl, onState }: ProbeProps) {
 describe("usePolledSpans", () => {
   it("starts in loading state with empty sessions", async () => {
     let last: ReturnType<typeof usePolledSpans> | null = null;
-    const fetchImpl = vi.fn(async () => [] as SpanRow[]);
+    const fetchImpl = vi.fn(async () => ok([]));
     render(
       <Probe
         intervalMs={5000}
@@ -70,7 +79,7 @@ describe("usePolledSpans", () => {
   it("stale slow first fetch does NOT overwrite a newer second fetch result", async () => {
     vi.useFakeTimers();
     try {
-      let slowResolver: ((rows: SpanRow[]) => void) | null = null;
+      let slowResolver: ((result: FetchResult) => void) | null = null;
       let callIdx = 0;
 
       const fetchImpl = vi.fn(async () => {
@@ -78,12 +87,12 @@ describe("usePolledSpans", () => {
         if (callIdx === 1) {
           // First call: never auto-resolves; we'll resolve it manually
           // AFTER the second call lands.
-          return new Promise<SpanRow[]>((resolve) => {
+          return new Promise<FetchResult>((resolve) => {
             slowResolver = resolve;
           });
         }
         // Second call: resolves immediately on the microtask queue.
-        return [row("fresh", "fresh-session")];
+        return ok([row("fresh", "fresh-session")]);
       });
 
       let last: ReturnType<typeof usePolledSpans> | null = null;
@@ -114,7 +123,7 @@ describe("usePolledSpans", () => {
       // Now manually resolve the SLOW first fetch with a different, older
       // snapshot. The generation guard must drop it.
       await act(async () => {
-        slowResolver!([row("stale", "stale-session")]);
+        slowResolver!(ok([row("stale", "stale-session")]));
         await vi.advanceTimersByTimeAsync(0);
       });
 
@@ -136,10 +145,10 @@ describe("usePolledSpans", () => {
     // when its successor is still in flight.
     vi.useFakeTimers();
     try {
-      const resolvers: Array<(rows: SpanRow[]) => void> = [];
+      const resolvers: Array<(result: FetchResult) => void> = [];
       const fetchImpl = vi.fn(
         () =>
-          new Promise<SpanRow[]>((resolve) => {
+          new Promise<FetchResult>((resolve) => {
             resolvers.push(resolve);
           }),
       );
@@ -166,7 +175,7 @@ describe("usePolledSpans", () => {
       // have been dropped (gen=1 !== generationRef=2). Under the fixed
       // guard it commits (gen=1 > lastCommittedGen=0).
       await act(async () => {
-        resolvers[0]!([row("first-slow", "session-a")]);
+        resolvers[0]!(ok([row("first-slow", "session-a")]));
         await vi.advanceTimersByTimeAsync(0);
       });
       const afterFirst = last as unknown as ReturnType<typeof usePolledSpans>;
@@ -177,7 +186,7 @@ describe("usePolledSpans", () => {
       // The second fetch (gen=2) is still in flight; resolving it should
       // also commit since gen=2 > lastCommittedGen=1.
       await act(async () => {
-        resolvers[1]!([row("second-slow", "session-b")]);
+        resolvers[1]!(ok([row("second-slow", "session-b")]));
         await vi.advanceTimersByTimeAsync(0);
       });
       const afterSecond = last as unknown as ReturnType<typeof usePolledSpans>;
@@ -196,14 +205,14 @@ describe("usePolledSpans", () => {
     // the guard to the effect run it was started in.
     vi.useFakeTimers();
     try {
-      const oldEpochResolvers: Array<(rows: SpanRow[]) => void> = [];
-      const newEpochResolvers: Array<(rows: SpanRow[]) => void> = [];
+      const oldEpochResolvers: Array<(result: FetchResult) => void> = [];
+      const newEpochResolvers: Array<(result: FetchResult) => void> = [];
       let intervalMs = 100;
       let isOldEpoch = true;
 
       const fetchImpl = vi.fn(
         () =>
-          new Promise<SpanRow[]>((resolve) => {
+          new Promise<FetchResult>((resolve) => {
             if (isOldEpoch) {
               oldEpochResolvers.push(resolve);
             } else {
@@ -241,7 +250,7 @@ describe("usePolledSpans", () => {
       // Resolve the OLD-epoch fetch with a stale-epoch payload. It must
       // NOT commit (cancelled-closure dropped it).
       await act(async () => {
-        oldEpochResolvers[0]!([row("stale-epoch", "stale-epoch-session")]);
+        oldEpochResolvers[0]!(ok([row("stale-epoch", "stale-epoch-session")]));
         await vi.advanceTimersByTimeAsync(0);
       });
       const afterStale = last as unknown as ReturnType<typeof usePolledSpans>;
@@ -251,13 +260,80 @@ describe("usePolledSpans", () => {
 
       // Resolve the NEW-epoch fetch — it commits cleanly.
       await act(async () => {
-        newEpochResolvers[0]!([row("fresh-epoch", "fresh-epoch-session")]);
+        newEpochResolvers[0]!(ok([row("fresh-epoch", "fresh-epoch-session")]));
         await vi.advanceTimersByTimeAsync(0);
       });
       const afterFresh = last as unknown as ReturnType<typeof usePolledSpans>;
       expect(afterFresh.sessions.length).toBe(1);
       expect(afterFresh.sessions[0]!.sessionKey).toBe("fresh-epoch-session");
       expect(afterFresh.loading).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      cleanup();
+    }
+  });
+
+  it("propagates the truncated flag from FetchResult into state (VOI-382)", async () => {
+    // The fetchOnce contract returns { rows, truncated }; the hook must
+    // surface truncated on PolledSpansState so SessionSidebar can render
+    // its chip. Regression: an earlier version dropped the flag because
+    // groupSpans only takes rows, so truncated lived only on the local
+    // closure and never reached state.
+    vi.useFakeTimers();
+    try {
+      // Suppress the once-per-transition warn so the test output stays clean.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      let callIdx = 0;
+      const fetchImpl = vi.fn(async () => {
+        callIdx += 1;
+        if (callIdx === 1) {
+          // rawRowCount > ceiling per the probe-row pattern (fetchOnce
+          // queries ceiling+1 rows; truncated=true iff CH returned > ceiling).
+          return {
+            rows: [row("a", "session-a")],
+            truncated: true,
+            rawRowCount: 50_001,
+          };
+        }
+        return {
+          rows: [row("b", "session-b")],
+          truncated: false,
+          rawRowCount: 1,
+        };
+      });
+
+      let last: ReturnType<typeof usePolledSpans> | null = null;
+      render(
+        <Probe
+          intervalMs={50}
+          fetchImpl={fetchImpl}
+          onState={(s) => {
+            last = s;
+          }}
+        />,
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      const afterFirst = last as unknown as ReturnType<typeof usePolledSpans>;
+      expect(afterFirst.truncated).toBe(true);
+      // The false→true transition fires console.warn exactly once.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      // Warn cites the RAW row count (the count truncated was decided
+      // from), not rows.length. Codex P2 round-3 2026-05-30.
+      const warnText = warnSpy.mock.calls[0]?.[0] as string;
+      expect(warnText).toContain("50001 raw rows");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60);
+      });
+      const afterSecond = last as unknown as ReturnType<typeof usePolledSpans>;
+      expect(afterSecond.truncated).toBe(false);
+      // No new warn on the true→false transition (only false→true warns).
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      warnSpy.mockRestore();
     } finally {
       vi.useRealTimers();
       cleanup();
@@ -271,7 +347,7 @@ describe("usePolledSpans", () => {
       const fetchImpl = vi.fn(async () => {
         callIdx += 1;
         if (callIdx === 1) {
-          return [row("good", "good-session")];
+          return ok([row("good", "good-session")]);
         }
         throw new Error("CH down");
       });

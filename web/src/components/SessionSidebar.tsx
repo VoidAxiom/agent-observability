@@ -25,12 +25,28 @@ export interface SessionSidebarProps {
   onSelect: (sessionId: string) => void;
   nowMs: number;
   emptyMessage?: string;
+  /**
+   * When true, render a terminal-comment chip in the pane header signalling
+   * that the polling query hit its row-count safety ceiling and older
+   * spans-within-the-window were dropped. Surfaces VOI-382's truncation
+   * signal to the operator so they know to raise the ceiling.
+   */
+  truncated?: boolean;
 }
 
 interface ServiceBucket {
   serviceName: string;
   sessions: SessionGroup[];
 }
+
+// Lead with the repo-standard CH_* primary (matches .env.example,
+// migrate.sh, docker-compose, Swift app). VITE_* is the web-only
+// fallback per loadQueryConfigFromEnv — mention it in the title hover
+// so the operator knows both work.
+const TRUNCATION_CHIP_TEXT =
+  "// window truncated · raise CH_QUERY_LIMIT_CEILING";
+const TRUNCATION_TITLE =
+  "ClickHouse returned the row-count safety ceiling; older spans within the configured time window were dropped. Raise CH_QUERY_LIMIT_CEILING (or VITE_CH_QUERY_LIMIT_CEILING as a web-only fallback), or shorten CH_QUERY_WINDOW_HOURS.";
 
 function bucketByService(sessions: SessionGroup[]): ServiceBucket[] {
   const order: string[] = [];
@@ -75,12 +91,41 @@ export function SessionSidebar({
   onSelect,
   nowMs,
   emptyMessage,
+  truncated = false,
 }: SessionSidebarProps) {
   const buckets = useMemo(() => bucketByService(sessions), [sessions]);
 
+  // Chip is rendered at a single position in BOTH branches via the
+  // same JSX node with a stable React `key` so the DOM node is
+  // preserved across the empty → populated transition. role="status"
+  // is an implicit aria-live="polite" region; without the stable
+  // identity, assistive tech would re-announce the same text every
+  // time `sessions` transitions from [] → [...] while truncated stays
+  // true. Codex P2 round-4 2026-05-30.
+  const chip = truncated ? (
+    <p
+      key="truncation-chip"
+      role="status"
+      data-truncation-chip="true"
+      style={truncationChipStyle}
+      title={TRUNCATION_TITLE}
+    >
+      {TRUNCATION_CHIP_TEXT}
+    </p>
+  ) : null;
+
   if (sessions.length === 0) {
+    // When the chip is shown we use the stacked-from-top layout (chip
+    // at top, message below it) so the chip reads as a header banner.
+    // When there's no chip, fall back to the centered awaiting-message
+    // style. Layout split inline (rather than two style objects) so the
+    // intent reads in one place: the chip is what changes the layout.
     return (
-      <aside aria-label="Sessions" style={emptyStateStyle}>
+      <aside
+        aria-label="Sessions"
+        style={truncated ? emptyStateWithChipStyle : emptyStateStyle}
+      >
+        {chip}
         <p style={emptyStateTextStyle}>
           {emptyMessage ?? "// awaiting spans from ClickHouse..."}
         </p>
@@ -99,6 +144,7 @@ export function SessionSidebar({
         </h2>
         <span style={paneHeaderHintStyle}>{`// ${sessions.length}`}</span>
       </header>
+      {chip}
       {buckets.map((bucket) => (
         <section key={bucket.serviceName} style={bucketStyle}>
           <h3 style={bucketHeaderStyle}>{bucket.serviceName}</h3>
@@ -295,6 +341,29 @@ const paneHeaderHintStyle: CSSProperties = {
   color: "var(--text-muted)",
 };
 
+const truncationChipStyle: CSSProperties = {
+  // position:sticky keeps the chip pinned to the top of the scrolling
+  // <aside> in the populated branch so it stays visible after the
+  // operator scrolls down through buckets. Without it, the chip
+  // scrolls out of viewport alongside the header in any pane with
+  // ~10+ sessions — defeating the chip's signaling purpose precisely
+  // when truncation has produced enough sessions to fill the pane.
+  // Codex P2 round-5 2026-05-30.
+  position: "sticky",
+  top: 0,
+  zIndex: 2,
+  margin: "2px 4px 0",
+  padding: "4px 8px",
+  fontFamily: "var(--font-mono)",
+  fontSize: "10px",
+  color: "var(--accent-2)",
+  background: "var(--surface-raised)",
+  border: "1px solid var(--accent-2)",
+  borderRadius: "var(--radius-card)",
+  letterSpacing: "0.02em",
+  cursor: "help",
+};
+
 const bucketStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
@@ -351,6 +420,20 @@ const emptyStateStyle: CSSProperties = {
   alignItems: "flex-start",
   justifyContent: "center",
   padding: "20px",
+  height: "100%",
+};
+
+// Variant of emptyStateStyle used when the truncation chip is also
+// rendered in the empty-state path. flexDirection:column so the chip
+// stacks above the message (the default row direction crowded them
+// side-by-side — codex P2 round-3 2026-05-30).
+const emptyStateWithChipStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "stretch",
+  justifyContent: "flex-start",
+  gap: "10px",
+  padding: "14px 12px",
   height: "100%",
 };
 

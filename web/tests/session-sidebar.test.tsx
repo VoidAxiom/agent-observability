@@ -159,6 +159,84 @@ describe("SessionSidebar", () => {
     expect(inline).not.toContain("var(--accent-1)");
   });
 
+  it("renders the truncation chip when truncated=true (VOI-382)", () => {
+    // The chip is the operator-visible signal that the polling query hit
+    // its row-count safety ceiling; absent → operator wouldn't know older
+    // sessions might be missing from the list. Selector is the structural
+    // data-truncation-chip attribute so the visible text can be tweaked
+    // without breaking the test.
+    const sessions = [makeSession({ id: "abc", serviceName: "claude-code" })];
+    const { container } = render(
+      <SessionSidebar
+        sessions={sessions}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        nowMs={Date.now()}
+        truncated={true}
+      />,
+    );
+    const chip = container.querySelector('[data-truncation-chip="true"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent ?? "").toMatch(/truncated/i);
+    // Chip leads with the repo-standard CH_* name (matches .env.example,
+    // migrate.sh, docker-compose, Swift app). VITE_* fallback lives in
+    // the title hover.
+    expect(chip?.textContent ?? "").toMatch(/CH_QUERY_LIMIT_CEILING/);
+    expect(chip?.textContent ?? "").not.toMatch(/VITE_CH_QUERY_LIMIT_CEILING/);
+  });
+
+  it("renders the truncation chip in the EMPTY-state path too — the diagnostic case the chip exists to surface", () => {
+    // Regression: /code-review round-2 P2 2026-05-30. The empty-state
+    // early-return previously hid the chip in the very situation that
+    // most needs it: CH returns 50k rows but none have a usable
+    // SessionId so groupSpans collapses to zero sessions; truncated=true
+    // but sidebar would short-circuit to "// awaiting" with zero signal
+    // that the cap was hit.
+    const { container } = render(
+      <SessionSidebar
+        sessions={[]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        nowMs={Date.now()}
+        emptyMessage="// no sessions"
+        truncated={true}
+      />,
+    );
+    const chip = container.querySelector('[data-truncation-chip="true"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent ?? "").toMatch(/CH_QUERY_LIMIT_CEILING/);
+  });
+
+  it("does NOT render the truncation chip when truncated is false or omitted", () => {
+    const sessions = [makeSession({ id: "abc", serviceName: "claude-code" })];
+    // Default omitted prop.
+    const r1 = render(
+      <SessionSidebar
+        sessions={sessions}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        nowMs={Date.now()}
+      />,
+    );
+    expect(
+      r1.container.querySelector('[data-truncation-chip="true"]'),
+    ).toBeNull();
+    r1.unmount();
+    // Explicit false.
+    const r2 = render(
+      <SessionSidebar
+        sessions={sessions}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        nowMs={Date.now()}
+        truncated={false}
+      />,
+    );
+    expect(
+      r2.container.querySelector('[data-truncation-chip="true"]'),
+    ).toBeNull();
+  });
+
   it("invokes onSelect with the session id when row clicked", () => {
     const onSelect = vi.fn();
     const sessions = [makeSession({ id: "abc", serviceName: "claude-code" })];

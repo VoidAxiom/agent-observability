@@ -7,6 +7,7 @@ import {
   ClickHouseError,
   fetchOnce,
   loadConfigFromEnv,
+  loadQueryConfigFromEnv,
 } from "../src/lib/clickhouse";
 
 // Vitest gives each module its own `import.meta.env`, so mutating the
@@ -269,6 +270,174 @@ describe("buildRequestUrl", () => {
   });
 });
 
+describe("loadQueryConfigFromEnv", () => {
+  it("returns defaults when no env vars are set (1h window, 50k ceiling — matches VOI-382 source brief)", () => {
+    // Defaults match the VOI-382 brief verbatim (1h, 50k). At peak
+    // ingest the chip WILL fire on busy boxes — that's the signal to
+    // tune via env. A follow-up packet can revisit the default with
+    // measured data.
+    expect(loadQueryConfigFromEnv(envFrom({}))).toEqual({
+      windowHours: 1,
+      limitCeiling: 50_000,
+    });
+  });
+
+  it("reads VITE_CH_QUERY_WINDOW_HOURS and VITE_CH_QUERY_LIMIT_CEILING", () => {
+    const cfg = loadQueryConfigFromEnv(
+      envFrom({
+        VITE_CH_QUERY_WINDOW_HOURS: "6",
+        VITE_CH_QUERY_LIMIT_CEILING: "100000",
+      }),
+    );
+    expect(cfg).toEqual({ windowHours: 6, limitCeiling: 100_000 });
+  });
+
+  it("reads the repo-standard CH_QUERY_* names and prefers them over VITE_CH_QUERY_*", () => {
+    // Same convention as loadConfigFromEnv: CH_* is repo-standard
+    // (matches .env.example, migrate.sh, docker-compose, Swift app);
+    // VITE_CH_* is the web-only fallback. An operator setting
+    // CH_QUERY_LIMIT_CEILING in repo-root .env must NOT have it
+    // silently ignored.
+    const onlyRepoStandard = loadQueryConfigFromEnv(
+      envFrom({
+        CH_QUERY_WINDOW_HOURS: "12",
+        CH_QUERY_LIMIT_CEILING: "200000",
+      }),
+    );
+    expect(onlyRepoStandard).toEqual({
+      windowHours: 12,
+      limitCeiling: 200_000,
+    });
+
+    const bothSet = loadQueryConfigFromEnv(
+      envFrom({
+        CH_QUERY_WINDOW_HOURS: "12",
+        VITE_CH_QUERY_WINDOW_HOURS: "1",
+      }),
+    );
+    expect(bothSet.windowHours).toBe(12);
+  });
+
+  it("throws on a present-but-invalid window-hours (not silently defaulted)", () => {
+    // Regression discipline: the port loader throws on a present-but-
+    // invalid value rather than coercing to the default, because silent
+    // coercion of an env typo masks the failure. Same rule here — a
+    // typo like VITE_CH_QUERY_WINDOW_HOURS=1h would otherwise make
+    // the SPA query the wrong window and look like a polling bug.
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_WINDOW_HOURS: "1h" })),
+    ).toThrow(ClickHouseError);
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_WINDOW_HOURS: "0" })),
+    ).toThrow(ClickHouseError);
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_WINDOW_HOURS: "-1" })),
+    ).toThrow(ClickHouseError);
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_WINDOW_HOURS: "1.5" })),
+    ).toThrow(ClickHouseError);
+  });
+
+  it("throws on a present-but-invalid limit-ceiling", () => {
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_LIMIT_CEILING: "bogus" })),
+    ).toThrow(ClickHouseError);
+    expect(() =>
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_LIMIT_CEILING: "0" })),
+    ).toThrow(ClickHouseError);
+  });
+
+  it("uses defaults when the env var is set to the empty string", () => {
+    expect(
+      loadQueryConfigFromEnv(envFrom({ VITE_CH_QUERY_WINDOW_HOURS: "" }))
+        .windowHours,
+    ).toBe(1);
+  });
+});
+
+describe("fetchOnce SQL-construction boundary validation", () => {
+  it("rejects a non-positive-integer windowHours at the SQL-construction site (not just at the env loader)", async () => {
+    // Regression: /code-review round-2 P2 2026-05-30. ClickHouseQueryConfig
+    // is typed as `{ windowHours: number; limitCeiling: number }`, so a
+    // direct caller (test, future Tauri wiring, anyone constructing the
+    // config without going through loadQueryConfigFromEnv) could pass
+    // 1.5 / NaN / 0 / Infinity and produce malformed SQL like
+    // `INTERVAL NaN HOUR`. Validation lives where the value is consumed.
+    const fetchImpl = vi.fn();
+    const cfg = {
+      host: "localhost",
+      port: 8123,
+      database: "default",
+      username: "default",
+      password: "",
+    };
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(
+        fetchOnce(cfg, fetchImpl as unknown as typeof fetch, {
+          windowHours: bad,
+          limitCeiling: 100,
+        }),
+      ).rejects.toThrow(ClickHouseError);
+    }
+    // Same for limitCeiling.
+    for (const bad of [0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(
+        fetchOnce(cfg, fetchImpl as unknown as typeof fetch, {
+          windowHours: 1,
+          limitCeiling: bad,
+        }),
+      ).rejects.toThrow(ClickHouseError);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects a windowHours above MAX_WINDOW_HOURS (symmetric env-typo guard to MAX_LIMIT_CEILING)", async () => {
+    // Regression: /code-review round-6 P3 2026-05-30. windowHours typo
+    // like CH_QUERY_WINDOW_HOURS=8760000 (meant 8760, ~1y) would
+    // otherwise produce `INTERVAL 8760000 HOUR` (~1000 years) →
+    // full-table scan timeout → generic CH 500 with no env-var hint.
+    const fetchImpl = vi.fn();
+    const cfg = {
+      host: "localhost",
+      port: 8123,
+      database: "default",
+      username: "default",
+      password: "",
+    };
+    await expect(
+      fetchOnce(cfg, fetchImpl as unknown as typeof fetch, {
+        windowHours: 8_760_000,
+        limitCeiling: 100,
+      }),
+    ).rejects.toThrow(ClickHouseError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects a limitCeiling above MAX_LIMIT_CEILING (so env typos like 1e21 surface as a named error, not a generic CH 500)", async () => {
+    // Regression: /code-review round-5 P2 2026-05-30. Number.isInteger
+    // returns true up to ~1e21, but Number.prototype.toString switches
+    // to exponential at ~1e21 ("1e+21"), producing SQL like `LIMIT 1e+21`
+    // which CH 500s on. The upper bound catches the obvious typo class
+    // at the SQL-construction boundary so the operator sees the env-var
+    // name in the error instead of debugging a CH outage.
+    const fetchImpl = vi.fn();
+    const cfg = {
+      host: "localhost",
+      port: 8123,
+      database: "default",
+      username: "default",
+      password: "",
+    };
+    await expect(
+      fetchOnce(cfg, fetchImpl as unknown as typeof fetch, {
+        windowHours: 1,
+        limitCeiling: 1e15,
+      }),
+    ).rejects.toThrow(ClickHouseError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 describe("fetchOnce", () => {
   it("POSTs to the same-origin /ch path, not the absolute upstream URL", async () => {
     // Regression: an earlier impl POSTed directly to
@@ -299,6 +468,262 @@ describe("fetchOnce", () => {
     ];
     expect(calledUrl).toBe("/ch?database=default");
     expect(init.method).toBe("POST");
+  });
+
+  it("SELECT body carries a Timestamp> windowing predicate (VOI-382 regression guard)", async () => {
+    // Regression guard: before VOI-382, the SELECT was
+    // `ORDER BY Timestamp DESC LIMIT 1000` with no WHERE clause; at
+    // sustained 67 spans/sec ingest that covered only ~15s of history
+    // and sessions flapped in/out. This test fails if anyone removes
+    // the Timestamp> predicate or hardcodes the LIMIT back to 1000.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("[]", { status: 200 }),
+    );
+    await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 3, limitCeiling: 12345 },
+    );
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    const body = String(init.body);
+    expect(body).toMatch(/WHERE Timestamp > now\(\) - INTERVAL 3 HOUR/);
+    // LIMIT is ceiling+1 (probe row so fetchOnce can distinguish
+    // exactly-ceiling-and-no-more from actually-truncated).
+    expect(body).toMatch(/LIMIT 12346/);
+  });
+
+  it("SELECT body MUST contain WHERE Timestamp> regardless of which ceiling/window is in effect (anti-regression: anyone deleting WHERE while keeping LIMIT must fail CI)", async () => {
+    // Honest regression guard for the "no WHERE clause" failure mode.
+    // The prior version asserted `expect(body).not.toMatch(/^[^W]*LIMIT 1000$/m)`,
+    // which only checks a single line and is implied by the LIMIT
+    // assertion above — tautological. This one explicitly verifies
+    // WHERE Timestamp> exists in the body, against the DEFAULT config
+    // (not a hand-passed window/ceiling) so a future change that
+    // accidentally bypasses buildSelect's windowing is caught.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("[]", { status: 200 }),
+    );
+    await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      // Default config — no overrides.
+    );
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    const body = String(init.body);
+    expect(body).toMatch(/WHERE\s+Timestamp\s*>\s*now\(\)/);
+    // And the LIMIT clause must be present and a positive integer,
+    // not bare/missing/hardcoded LIMIT 1000.
+    const limitMatch = body.match(/LIMIT\s+(\d+)/);
+    expect(limitMatch).not.toBeNull();
+    const limitVal = Number(limitMatch![1]);
+    expect(limitVal).toBeGreaterThan(1000);
+  });
+
+  it("returns truncated=true when raw row count EXCEEDS the limit ceiling (probe-row pattern)", async () => {
+    // Three raw rows; ceiling=2 → CH actually returned more than the
+    // visible cap → truncated. The flag drives the SessionSidebar's
+    // "// window truncated" chip; without it the operator has no signal
+    // that older sessions were silently dropped. fetchOnce trims the
+    // probe row out of visible rows so SessionSidebar sees at most
+    // ceiling rows even though CH sent ceiling+1.
+    const fixtureRow = {
+      TraceId: "t",
+      SpanId: "s",
+      ParentSpanId: "",
+      SpanName: "x",
+      Timestamp: "2026-01-01T00:00:00",
+      ServiceName: "svc",
+      AgentProject: "p",
+      AgentSessionId: "as",
+      AgentRunId: "r",
+      SessionId: "sid",
+      ProjectName: "p",
+      ResourceAttributesRaw: {},
+      SpanAttributesRaw: {},
+      StatusCode: "",
+      Duration: 0,
+    };
+    const body = JSON.stringify([fixtureRow, fixtureRow, fixtureRow]);
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(body, { status: 200 }),
+    );
+    const result = await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 1, limitCeiling: 2 },
+    );
+    // Visible rows TRIMMED to ceiling so SessionSidebar sees at most
+    // ceiling rows even though CH sent ceiling+1 (the probe).
+    expect(result.rows.length).toBe(2);
+    expect(result.truncated).toBe(true);
+    // rawRowCount mirrors what CH actually sent (3 array elements)
+    // so the warn diagnostic cites the count that matched the
+    // ceiling-hit decision.
+    expect(result.rawRowCount).toBe(3);
+  });
+
+  it("returns truncated=false when raw row count is EXACTLY the ceiling (the probe row pattern's whole point)", async () => {
+    // Regression: /code-review round-4 P2 2026-05-30. With the prior
+    // `>=` semantic, a quiet window containing exactly ceiling spans
+    // would false-trip the chip even though no data was actually
+    // dropped. Now buildSelect queries ceiling+1 rows and the test is
+    // `rawRowCount > ceiling`, so an exact-ceiling result means "CH had
+    // exactly that many; nothing dropped". The chip stays dark.
+    const fixtureRow = {
+      TraceId: "t",
+      SpanId: "s",
+      ParentSpanId: "",
+      SpanName: "x",
+      Timestamp: "2026-01-01T00:00:00",
+      ServiceName: "svc",
+      AgentProject: "p",
+      AgentSessionId: "as",
+      AgentRunId: "r",
+      SessionId: "sid",
+      ProjectName: "p",
+      ResourceAttributesRaw: {},
+      SpanAttributesRaw: {},
+      StatusCode: "",
+      Duration: 0,
+    };
+    // Exactly 3 rows; ceiling=3 — same count, no probe row consumed.
+    const body = JSON.stringify([fixtureRow, fixtureRow, fixtureRow]);
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(body, { status: 200 }),
+    );
+    const result = await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 1, limitCeiling: 3 },
+    );
+    expect(result.rows.length).toBe(3);
+    expect(result.truncated).toBe(false);
+    expect(result.rawRowCount).toBe(3);
+  });
+
+  it("truncated detection uses raw row count, NOT parsed-row count (a single malformed JSONEachRow line must not produce a false-negative when CH actually exceeded the cap)", async () => {
+    // Regression: /code-review round-1 P2 2026-05-30. decodeRows silently
+    // skips malformed JSONEachRow lines (matches Swift's log+continue).
+    // If truncation were computed from parsed rows.length, a single bad
+    // line when CH actually exceeded limitCeiling would silently flip
+    // the chip off — recreating the "silent data loss" failure mode that
+    // VOI-382 was filed to surface in the first place.
+    const goodRow = JSON.stringify({
+      TraceId: "t",
+      SpanId: "s",
+      ParentSpanId: "",
+      SpanName: "x",
+      Timestamp: "2026-01-01T00:00:00",
+      ServiceName: "svc",
+      AgentProject: "p",
+      AgentSessionId: "as",
+      AgentRunId: "r",
+      SessionId: "sid",
+      ProjectName: "p",
+      ResourceAttributesRaw: {},
+      SpanAttributesRaw: {},
+      StatusCode: "",
+      Duration: 0,
+    });
+    // 3 "raw" rows: 2 good + 1 malformed (starts with `{` but is
+    // unparseable). decodeRowsWithCount must report rawRowCount=3 so
+    // truncation detection (which uses rawRowCount, not parsed length)
+    // fires even though decodeRows only emits 2 rows.
+    const body = `${goodRow}\n${goodRow}\n{ this is not valid json }`;
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(body, { status: 200 }),
+    );
+    const result = await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 1, limitCeiling: 2 },
+    );
+    expect(result.rows.length).toBe(2);
+    expect(result.truncated).toBe(true);
+    // Critical for the diagnostic: rawRowCount is 3 (CH sent 3 lines)
+    // even though only 2 parsed. The warn cites rawRowCount so the
+    // operator sees a count that matches the ceiling-hit decision.
+    expect(result.rawRowCount).toBe(3);
+  });
+
+  it("malformed array-shaped body does NOT fall through to the line-scanner (rawRowCount stays accurate, no false truncation chip)", async () => {
+    // Regression: /code-review round-4 P2 2026-05-30. A multi-line
+    // array body like `[\n{...},\n{...}\n` (truncated mid-stream, or
+    // a trailing comma) used to fall through to the JSONEachRow line
+    // splitter, which then counted bracket/comma lines as raw rows
+    // and inflated rawRowCount, potentially false-tripping the
+    // truncation chip at the boundary. Now the array branch
+    // conservatively returns rawRowCount=0 on parse failure.
+    const malformedArray = `[\n{"x":1},\n{"x":2},\n`; // missing closing ]
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(malformedArray, { status: 200 }),
+    );
+    const result = await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 1, limitCeiling: 2 },
+    );
+    expect(result.rows).toEqual([]);
+    // Conservative: parse failed → can't trust the line scanner on
+    // bracket/comma boilerplate → rawRowCount is 0, NOT inflated.
+    expect(result.rawRowCount).toBe(0);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("returns truncated=false when row count is below the ceiling", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("[]", { status: 200 }),
+    );
+    const result = await fetchOnce(
+      {
+        host: "localhost",
+        port: 8123,
+        database: "default",
+        username: "default",
+        password: "",
+      },
+      fetchImpl as unknown as typeof fetch,
+      { windowHours: 1, limitCeiling: 100 },
+    );
+    expect(result.rows).toEqual([]);
+    expect(result.truncated).toBe(false);
+    expect(result.rawRowCount).toBe(0);
   });
 
   it("still validates host/port at the fetch boundary", async () => {
