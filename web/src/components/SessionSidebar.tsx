@@ -285,7 +285,11 @@ function SessionRow({
           type="button"
           onClick={() => onToggleExpand(node.id)}
           aria-expanded={expanded}
-          aria-controls={childrenListId}
+          // aria-controls only when the controlled element actually
+          // exists in the DOM — when collapsed, the <ul id={childrenListId}>
+          // isn't rendered and axe-core / strict screen-readers flag the
+          // dangling reference. Claude /code-review P2 #6, 2026-05-31.
+          aria-controls={expanded ? childrenListId : undefined}
           aria-label={expanded ? "Collapse" : "Expand"}
           data-disclosure="true"
           data-node-id={node.id}

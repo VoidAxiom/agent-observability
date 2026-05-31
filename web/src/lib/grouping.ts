@@ -151,9 +151,15 @@ export function groupSpansToTree(rows: SpanRow[]): SessionNode[] {
   // Index every span globally by (traceId, spanId) so the codex parent.span.id
   // walk has O(1) ancestor lookup. Cycle safety in the walker is enforced
   // separately by a per-walk visited set; this map is purely lookup.
+  // Also build a SpanId-only side index ONCE here (codex stamps don't carry
+  // the parent's TraceId; the walker needs SpanId-only lookup). Building it
+  // here — outside resolveCodexParent — means we do the work once instead
+  // of once per codex session (Claude /code-review P2 #3, 2026-05-31).
   const spanByGlobalId = new Map<string, SpanRow>();
+  const spanBySpanId = new Map<string, SpanRow>();
   for (const row of rows) {
     spanByGlobalId.set(globalSpanId(row), row);
+    if (!spanBySpanId.has(row.SpanId)) spanBySpanId.set(row.SpanId, row);
   }
 
   // Partition rows into the buckets the algorithm needs.
@@ -188,12 +194,22 @@ export function groupSpansToTree(rows: SpanRow[]): SessionNode[] {
   // We also collect every dispatch-map agent_id so the codex parent walker
   // knows which agent_ids count as "subagent" (vs root-Claude work spans).
   const claudeNodesBySession = new Map<string, SessionNode>();
-  // Map agent_id (across all claude sessions) → the subagent node it
-  // resolves to. Used by codex parent.span.id resolution.
-  const subagentNodeByAgentId = new Map<string, SessionNode>();
+  // Map (sessionId, agentId) → subagent node. Scoped by session so two
+  // claude sessions whose subagents happen to share an agent_id value
+  // (rare with UUIDv4 today, guaranteed if Claude Code ever moves to
+  // deterministic ids, or with fixture replays) don't silently overwrite
+  // each other — Claude /code-review P2 #2, 2026-05-31.
+  const subagentNodeByKey = new Map<string, SessionNode>();
+  const subagentKey = (sessionId: string, agentId: string): string =>
+    `${sessionId}::${agentId}`;
 
   for (const [sessionId, sessionRows] of claudeRowsBySession) {
-    const node = buildClaudeNode(sessionId, sessionRows, subagentNodeByAgentId);
+    const node = buildClaudeNode(
+      sessionId,
+      sessionRows,
+      subagentNodeByKey,
+      subagentKey,
+    );
     claudeNodesBySession.set(sessionId, node);
   }
 
@@ -203,8 +219,9 @@ export function groupSpansToTree(rows: SpanRow[]): SessionNode[] {
     const node = buildCodexNode(codexSessionId, codexRows);
     const parent = resolveCodexParent(
       codexRows,
-      spanByGlobalId,
-      subagentNodeByAgentId,
+      spanBySpanId,
+      subagentNodeByKey,
+      subagentKey,
       claudeNodesBySession,
     );
     if (parent === "orphan") {
@@ -303,16 +320,16 @@ export function spanRowId(row: SpanRow): string {
 function buildClaudeNode(
   sessionId: string,
   sessionRows: SpanRow[],
-  subagentNodeByAgentId: Map<string, SessionNode>,
+  subagentNodeByKey: Map<string, SessionNode>,
+  subagentKey: (sessionId: string, agentId: string) => string,
 ): SessionNode {
-  // Identify dispatch agent_ids in this session. A dispatch span carries
-  // SpanAttributes['subagent_type'] AND its own agent_id is the "parent"
-  // (root agent's) — the subagent's own agent_id is on the dispatched
-  // work spans (first descendant carrying agent_id). The current SDK
-  // emits both the dispatch span and the subagent's own work spans
-  // tagged with the SAME subagent_id, so we resolve via tree-walk down
-  // ParentSpanId.
-  const dispatchAgentIdToSubagentType = buildDispatchAgentIdMap(sessionRows);
+  // Identify dispatch agent_ids in this session AND the outer agent_id
+  // (parent subagent, if any) the dispatch span itself lives under. This
+  // is the "subagent dispatching another subagent" case from spec §
+  // Layer 1 step 2 — Claude /code-review P2 #1, 2026-05-31. Without
+  // outer-resolution, nested subagents flat-list as siblings under the
+  // claude root.
+  const dispatchInfo = buildDispatchAgentIdMap(sessionRows);
 
   // Partition spans: those with agent_id present in the dispatch map
   // belong to a subagent bucket; everything else stays on the claude node.
@@ -320,7 +337,7 @@ function buildClaudeNode(
   const subagentBuckets = new Map<string, SpanRow[]>();
   for (const row of sessionRows) {
     const agentId = row.SpanAttributesRaw["agent_id"] ?? "";
-    if (agentId !== "" && dispatchAgentIdToSubagentType.has(agentId)) {
+    if (agentId !== "" && dispatchInfo.has(agentId)) {
       pushBucket(subagentBuckets, agentId, row);
     } else {
       claudeOwnSpans.push(row);
@@ -337,9 +354,20 @@ function buildClaudeNode(
     displayLabelOverride: null,
   });
 
-  // Build subagent children + register them in the cross-session map.
+  // Build subagent nodes. Each is registered in the per-session
+  // (sessionId, agentId) map BEFORE we wire parents — that way a nested
+  // subagent whose outer agent_id was just registered can find its
+  // parent.
+  interface PendingSubagent {
+    agentId: string;
+    outerAgentId: string;
+    node: SessionNode;
+  }
+  const pending: PendingSubagent[] = [];
   for (const [agentId, agentSpans] of subagentBuckets) {
-    const subagentType = dispatchAgentIdToSubagentType.get(agentId) ?? agentId;
+    const info = dispatchInfo.get(agentId);
+    const subagentType = info?.subagentType ?? agentId;
+    const outerAgentId = info?.outerAgentId ?? "";
     const subagentId = `${sessionId}::subagent::${agentId}`;
     const subagentNode = makeSessionNode({
       kind: "subagent",
@@ -350,21 +378,55 @@ function buildClaudeNode(
       serviceNameFallback: CLAUDE_SERVICE,
       displayLabelOverride: subagentType,
     });
-    claudeNode.children.push(subagentNode);
-    subagentNodeByAgentId.set(agentId, subagentNode);
+    subagentNodeByKey.set(subagentKey(sessionId, agentId), subagentNode);
+    pending.push({ agentId, outerAgentId, node: subagentNode });
+  }
+  // Second sub-pass: wire parents. Nested subagents (outer is also a
+  // dispatched subagent in THIS session) reparent under the outer; everyone
+  // else stays under the claude root.
+  for (const p of pending) {
+    if (
+      p.outerAgentId !== "" &&
+      p.outerAgentId !== p.agentId &&
+      subagentBuckets.has(p.outerAgentId)
+    ) {
+      const outer = subagentNodeByKey.get(
+        subagentKey(sessionId, p.outerAgentId),
+      );
+      if (outer) {
+        p.node.parentId = outer.id;
+        outer.children.push(p.node);
+        continue;
+      }
+    }
+    claudeNode.children.push(p.node);
   }
 
   return claudeNode;
 }
 
+interface DispatchInfo {
+  /** subagent_type label from the dispatch span. */
+  subagentType: string;
+  /** agent_id carried by the dispatch span itself — the OUTER subagent's
+   *  agent_id when subagents nest. Empty when the dispatch span has no
+   *  agent_id (the root Claude agent dispatched directly). */
+  outerAgentId: string;
+}
+
 /**
- * Find every (agent_id → subagent_type) pairing in this session. A
+ * Find every (agent_id → DispatchInfo) pairing in this session. A
  * dispatch span carries subagent_type as a span attribute; the dispatched
  * subagent's own agent_id appears on the first descendant work span via
- * tree-walk down ParentSpanId. Cycle-safe via visited set.
+ * BFS down ParentSpanId (BFS for determinism — picks the earliest-
+ * timestamp descendant rather than whatever LIFO order Map iteration
+ * happened to emit; Claude /code-review P3 #7, 2026-05-31). Cycle-safe
+ * via visited set.
  */
-function buildDispatchAgentIdMap(sessionRows: SpanRow[]): Map<string, string> {
-  const out = new Map<string, string>();
+function buildDispatchAgentIdMap(
+  sessionRows: SpanRow[],
+): Map<string, DispatchInfo> {
+  const out = new Map<string, DispatchInfo>();
   // Build a per-trace child index so descendant walks are O(children).
   const childrenByParent = new Map<string, SpanRow[]>();
   for (const row of sessionRows) {
@@ -378,9 +440,11 @@ function buildDispatchAgentIdMap(sessionRows: SpanRow[]): Map<string, string> {
     if (subagentType === "") continue;
     const agentId = findFirstDescendantAgentId(dispatchSpan, childrenByParent);
     if (agentId === null) continue;
+    const outerAgentId =
+      dispatchSpan.SpanAttributesRaw["agent_id"] ?? "";
     // First-wins on collisions: a later dispatch span re-using the same
     // agent_id should NOT overwrite the original subagent_type label.
-    if (!out.has(agentId)) out.set(agentId, subagentType);
+    if (!out.has(agentId)) out.set(agentId, { subagentType, outerAgentId });
   }
   return out;
 }
@@ -390,9 +454,13 @@ function findFirstDescendantAgentId(
   childrenByParent: Map<string, SpanRow[]>,
 ): string | null {
   const visited = new Set<string>();
-  const stack: SpanRow[] = [start];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
+  // BFS via shift-from-front so the FIRST descendant (by timestamp order
+  // within each parent's children list, sorted below) wins — matches the
+  // docstring contract instead of whatever LIFO order DFS+Map iteration
+  // happens to produce. Claude /code-review P3 #7, 2026-05-31.
+  const queue: SpanRow[] = [start];
+  while (queue.length > 0) {
+    const node = queue.shift()!;
     const key = globalSpanId(node);
     if (visited.has(key)) continue;
     visited.add(key);
@@ -402,7 +470,16 @@ function findFirstDescendantAgentId(
     }
     const children = childrenByParent.get(key);
     if (children) {
-      for (const child of children) stack.push(child);
+      // Sort children by Timestamp so "first descendant" is deterministic
+      // across input shuffles. Insertion-order tie-break preserved.
+      const ordered = [...children]
+        .map((row, offset) => ({ row, offset }))
+        .sort((a, b) => {
+          if (a.row.Timestamp === b.row.Timestamp) return a.offset - b.offset;
+          return a.row.Timestamp < b.row.Timestamp ? -1 : 1;
+        })
+        .map((entry) => entry.row);
+      for (const child of ordered) queue.push(child);
     }
   }
   return null;
@@ -433,8 +510,9 @@ function buildCodexNode(codexSessionId: string, codexRows: SpanRow[]): SessionNo
  */
 function resolveCodexParent(
   codexRows: SpanRow[],
-  spanByGlobalId: Map<string, SpanRow>,
-  subagentNodeByAgentId: Map<string, SessionNode>,
+  spanBySpanId: Map<string, SpanRow>,
+  subagentNodeByKey: Map<string, SessionNode>,
+  subagentKey: (sessionId: string, agentId: string) => string,
   claudeNodesBySession: Map<string, SessionNode>,
 ): SessionNode | null | "orphan" {
   // The resource attributes carrying agent.parent.* are emitted once per
@@ -448,16 +526,17 @@ function resolveCodexParent(
   const parentSessionId =
     first.ResourceAttributesRaw["agent.parent.session.id"] ?? "";
 
-  // Tier 1: walk up parent.span.id to find a subagent ancestor.
-  if (parentSpanId !== "") {
-    // The parent span lives in claude-code's trace, not codex's — so we
-    // must search across ALL traces for matching SpanId, not just within
-    // a particular TraceId. The global-id map is keyed on TraceId+SpanId
-    // which doesn't help here. Build a side index on SpanId once.
+  // Tier 1: walk up parent.span.id to find a subagent ancestor. The
+  // walk is scoped to the codex's stamped parent.session.id so we don't
+  // match an agent_id that happens to collide across sessions — Claude
+  // /code-review P2 #2, 2026-05-31.
+  if (parentSpanId !== "" && parentSessionId !== "") {
     const subagentAncestor = walkToSubagentAncestor(
       parentSpanId,
-      spanByGlobalId,
-      subagentNodeByAgentId,
+      parentSessionId,
+      spanBySpanId,
+      subagentNodeByKey,
+      subagentKey,
     );
     if (subagentAncestor) return subagentAncestor;
   }
@@ -474,31 +553,25 @@ function resolveCodexParent(
 
 function walkToSubagentAncestor(
   startSpanId: string,
-  spanByGlobalId: Map<string, SpanRow>,
-  subagentNodeByAgentId: Map<string, SessionNode>,
+  parentSessionId: string,
+  spanBySpanId: Map<string, SpanRow>,
+  subagentNodeByKey: Map<string, SessionNode>,
+  subagentKey: (sessionId: string, agentId: string) => string,
 ): SessionNode | null {
-  // Build a side index on SpanId alone (no TraceId) since the codex stamp
-  // doesn't carry the parent's TraceId. If multiple spans across traces
-  // share the same SpanId (vanishingly unlikely for 64-bit OTel ids but
-  // not impossible), the first match wins — same heuristic computeTreeOrder
-  // uses elsewhere when it bounds by rows.length. Built lazily per call to
-  // avoid carrying a stale snapshot.
-  const bySpanId = new Map<string, SpanRow>();
-  for (const row of spanByGlobalId.values()) {
-    if (!bySpanId.has(row.SpanId)) bySpanId.set(row.SpanId, row);
-  }
   const visited = new Set<string>();
   let currentSpanId: string = startSpanId;
   let depth = 0;
-  const maxDepth = Math.min(1000, spanByGlobalId.size);
+  const maxDepth = Math.min(1000, spanBySpanId.size);
   while (currentSpanId !== "" && depth < maxDepth) {
     if (visited.has(currentSpanId)) return null;
     visited.add(currentSpanId);
-    const row = bySpanId.get(currentSpanId);
+    const row = spanBySpanId.get(currentSpanId);
     if (!row) return null;
     const agentId = row.SpanAttributesRaw["agent_id"] ?? "";
     if (agentId !== "") {
-      const subagent = subagentNodeByAgentId.get(agentId);
+      const subagent = subagentNodeByKey.get(
+        subagentKey(parentSessionId, agentId),
+      );
       if (subagent) return subagent;
     }
     currentSpanId = row.ParentSpanId;

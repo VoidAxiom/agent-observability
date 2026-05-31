@@ -263,9 +263,26 @@ function Shell() {
   // forest (not just visibleSessions — switching tabs shouldn't drop
   // state for a node visible in History but hidden in Live).
   useEffect(() => {
-    if (expandedNodeIds.size === 0) return;
+    // ALWAYS run the prune (even when expandedNodeIds.size === 0) so we
+    // also prune autoExpandedSeenRef. Without that, a long-running tab
+    // accumulates aged-out root ids forever AND a re-emitted root id (a
+    // session resurfacing after a fixture replay or a CH window shift)
+    // would silently skip auto-expand because seen.has(id) is still true.
+    // Claude /code-review P2 #4, 2026-05-31.
     const live = new Set<string>();
     forEachNode(sessions, (node) => live.add(node.id));
+
+    // Prune the auto-expanded-seen tracking against live ids.
+    const seen = autoExpandedSeenRef.current;
+    if (seen.size > 0) {
+      const pruned = new Set<string>();
+      for (const id of seen) {
+        if (live.has(id)) pruned.add(id);
+      }
+      autoExpandedSeenRef.current = pruned;
+    }
+
+    if (expandedNodeIds.size === 0) return;
     let stale = false;
     for (const id of expandedNodeIds) {
       if (!live.has(id)) {

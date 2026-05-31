@@ -822,6 +822,137 @@ describe("groupSpansToTree (VOI-386)", () => {
     expect(findNodeById([cycleA], "nope")).toBeNull();
   });
 
+  it("nested subagent (subagent dispatching another subagent) reparents under the outer subagent — not the claude root", () => {
+    // Spec § Layer 1 step 2: "Parent = the enclosing claude session OR
+    // an enclosing subagent, via the span tree, if subagents nest."
+    // Claude /code-review P2 #1 fix.
+    //
+    // Topology: claude root → outer subagent (a-outer) → inner subagent (a-inner).
+    // The inner dispatch span has agent_id=a-outer (it lives under the outer
+    // subagent's work tree); the inner's own agent_id is a-inner.
+    const forest = groupSpansToTree([
+      claudeSpan({
+        sessionId: "sess-nest",
+        spanId: "root",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      // Outer dispatch — dispatched BY the root agent (so dispatch span
+      // has no agent_id).
+      claudeSpan({
+        sessionId: "sess-nest",
+        spanId: "outer-dispatch",
+        parentSpanId: "root",
+        timestamp: "2026-01-01T00:00:02.000000000",
+        subagentType: "outer",
+      }),
+      claudeSpan({
+        sessionId: "sess-nest",
+        spanId: "outer-work",
+        parentSpanId: "outer-dispatch",
+        timestamp: "2026-01-01T00:00:03.000000000",
+        agentId: "a-outer",
+      }),
+      // Inner dispatch — has agent_id=a-outer because it's emitted FROM
+      // the outer subagent's context.
+      claudeSpan({
+        sessionId: "sess-nest",
+        spanId: "inner-dispatch",
+        parentSpanId: "outer-work",
+        timestamp: "2026-01-01T00:00:04.000000000",
+        agentId: "a-outer",
+        subagentType: "inner",
+      }),
+      claudeSpan({
+        sessionId: "sess-nest",
+        spanId: "inner-work",
+        parentSpanId: "inner-dispatch",
+        timestamp: "2026-01-01T00:00:05.000000000",
+        agentId: "a-inner",
+      }),
+    ]);
+    const root = findRootBySession(forest, "sess-nest");
+    // Outer subagent must be a direct child of the claude root.
+    expect(root.children.length).toBe(1);
+    const outer = root.children[0]!;
+    expect(outer.kind).toBe("subagent");
+    expect(outer.displayLabel).toBe("outer");
+    // Inner subagent must nest under OUTER, NOT under root.
+    expect(outer.children.length).toBe(1);
+    const inner = outer.children[0]!;
+    expect(inner.kind).toBe("subagent");
+    expect(inner.displayLabel).toBe("inner");
+    expect(inner.parentId).toBe(outer.id);
+  });
+
+  it("cross-session agent_id collision does NOT cross-talk subagent resolution", () => {
+    // Two distinct claude sessions whose subagents happen to share an
+    // agent_id (counter-based ids, fixture replays, etc). Each session's
+    // codex stamp must resolve to ITS OWN subagent, not the other one.
+    // Claude /code-review P2 #2 fix.
+    const forest = groupSpansToTree([
+      // Session A:
+      claudeSpan({
+        sessionId: "sess-A",
+        spanId: "a-root",
+        timestamp: "2026-01-01T00:00:01.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-A",
+        spanId: "a-dispatch",
+        parentSpanId: "a-root",
+        timestamp: "2026-01-01T00:00:02.000000000",
+        subagentType: "sub-A",
+      }),
+      claudeSpan({
+        sessionId: "sess-A",
+        spanId: "a-sub",
+        parentSpanId: "a-dispatch",
+        timestamp: "2026-01-01T00:00:03.000000000",
+        agentId: "shared-id",
+      }),
+      // Session B (uses the SAME shared-id agent_id):
+      claudeSpan({
+        sessionId: "sess-B",
+        spanId: "b-root",
+        timestamp: "2026-01-01T00:00:10.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-B",
+        spanId: "b-dispatch",
+        parentSpanId: "b-root",
+        timestamp: "2026-01-01T00:00:11.000000000",
+        subagentType: "sub-B",
+      }),
+      claudeSpan({
+        sessionId: "sess-B",
+        spanId: "b-sub",
+        parentSpanId: "b-dispatch",
+        timestamp: "2026-01-01T00:00:12.000000000",
+        agentId: "shared-id",
+      }),
+      // A codex stamped to session A whose parent.span.id walks up into A's subtree.
+      codexSpan({
+        codexSessionId: "codex-A",
+        spanId: "ca-1",
+        parentSpanIdStamp: "a-sub",
+        parentSessionIdStamp: "sess-A",
+        timestamp: "2026-01-01T00:00:04.000000000",
+      }),
+    ]);
+    const rootA = findRootBySession(forest, "sess-A");
+    const subA = rootA.children[0]!;
+    expect(subA.displayLabel).toBe("sub-A");
+    // The codex's resolved parent should be sub-A — not sub-B (which
+    // also has shared-id agent_id). Per-session scoping ensures this.
+    expect(subA.children.length).toBe(1);
+    expect(subA.children[0]!.sessionKey).toBe("codex-A");
+    const rootB = findRootBySession(forest, "sess-B");
+    const subB = rootB.children[0]!;
+    expect(subB.displayLabel).toBe("sub-B");
+    // sub-B must NOT have inherited codex-A.
+    expect(subB.children.length).toBe(0);
+  });
+
   it("groupSpans alias matches groupSpansToTree output", () => {
     const rows = [
       claudeSpan({
