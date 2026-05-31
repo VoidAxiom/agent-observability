@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Copy } from "lucide-react";
 import type { SessionGroup, SpanRow, TraceGroup } from "../lib/grouping";
-import { parseTimestamp, rowHasError } from "../lib/grouping";
+import { rowHasError } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
 import {
   groupAttributes,
@@ -217,25 +217,11 @@ function TraceDetails({ trace }: TraceDetailsProps) {
   const durationDisplay = formatHeroDurationMs(trace.durationSeconds * 1000);
   const durationExact = `${trace.durationSeconds.toFixed(6)}s`;
 
-  // VOI-389 round-5 (codex P2): trace.rootStart collapses to the
-  // DISTANT_PAST sentinel when ANY span row's Timestamp fails to parse,
-  // because grouping maps malformed rows to DISTANT_PAST and then
-  // min()s across the trace. That meant a partially valid trace with
-  // one bad child timestamp rendered "started --" here even though the
-  // waterfall chip and axis ticks happily showed real EST times derived
-  // from the parseable spans. Mirror WaterfallShell's per-span min-of-
-  // parseable derivation so the MiniStat agrees with the waterfall.
-  // All-unparseable still yields NaN, which formatAbsoluteEst renders
-  // as "--" via its NaN/sentinel fallback.
-  const derivedRootStartMs = useMemo(() => {
-    let min = Number.POSITIVE_INFINITY;
-    for (const s of trace.spans) {
-      const t = parseTimestamp(s.Timestamp);
-      if (t === null) continue;
-      if (t < min) min = t;
-    }
-    return min === Number.POSITIVE_INFINITY ? Number.NaN : min;
-  }, [trace.spans]);
+  // VOI-389 round-5 (codex P2 altitude fix, follow-up): trace.rootStart
+  // is now trustworthy — grouping filters the DISTANT_PAST sentinel
+  // BEFORE picking the trace min, so partially-valid traces no longer
+  // poison this value. Consume the prop directly instead of re-deriving.
+  const hasRootStart = isAbsoluteTimeAvailable(trace.rootStart);
 
   return (
     <section aria-label="Details" style={paneStyle}>
@@ -264,18 +250,17 @@ function TraceDetails({ trace }: TraceDetailsProps) {
         <MiniStat label="spans" value={String(trace.spanCount)} />
         <MiniStat label="errors" value={String(errorCount)} />
         <MiniStat label="services" value={String(services.length)} />
-        {/* VOI-389: absolute EST wall-clock start. Derived from the
-            spans' parseable Timestamps (mirrors WaterfallShell) rather
-            than trace.rootStart, because the grouping layer collapses
-            ANY malformed row to the DISTANT_PAST sentinel and then
-            min()s across the trace — one bad child timestamp would
-            otherwise force this stat to "--" while the waterfall
-            cheerfully shows real EST times. All-unparseable yields NaN
-            here, which the formatter renders as "--". */}
+        {/* VOI-389: absolute EST wall-clock start. trace.rootStart is
+            the earliest PARSEABLE Timestamp across the trace's spans
+            (grouping filters the DISTANT_PAST sentinel before picking
+            the min — VOI-389 round-5 codex altitude fix). All-unparseable
+            still falls back to the sentinel, which the formatter
+            renders as "--" and the title suppresses (see
+            traceStartTitle above). */}
         <MiniStat
           label="started"
-          value={formatAbsoluteEst(derivedRootStartMs)}
-          title={formatAbsoluteEstWithDate(derivedRootStartMs)}
+          value={formatAbsoluteEst(trace.rootStart)}
+          title={hasRootStart ? formatAbsoluteEstWithDate(trace.rootStart) : undefined}
         />
       </div>
 

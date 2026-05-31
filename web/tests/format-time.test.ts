@@ -70,45 +70,14 @@ describe("DST awareness", () => {
   });
 });
 
-describe("formatter cache (module-scope Intl reuse)", () => {
-  it("calling formatAbsoluteEstWithMs N times is much cheaper than constructing N formatters", () => {
-    // VOI-389 round-5 (codex anti-rot): the previous wall-clock budget
-    // (10k calls < 100ms) is the exact flake-risk CLAUDE.md § Anti-rot
-    // warns about — heavy CI parallelism / cold boxes can blow the
-    // budget for environmental reasons even when the cache is intact.
-    //
-    // Replace with a structural RELATIVE comparison: measure the cost
-    // of a fresh per-call Intl construction vs the module's cached
-    // path over the same N. If formatTime ever regresses to per-call
-    // construction, the two costs converge and the ratio collapses
-    // toward 1; today the ratio is >5x even on slow runners. We assert
-    // a generous lower bound (>2x) so noise is absorbed but a real
-    // regression still trips.
-    const N = 2_000;
-    // Cached path — the module's module-scope HMS_MS_FORMATTER.
-    const cachedStart = performance.now();
-    for (let i = 0; i < N; i += 1) {
-      formatAbsoluteEstWithMs(i * 1000);
-    }
-    const cachedElapsed = performance.now() - cachedStart;
-
-    // Uncached control — construct the formatter on every call.
-    const uncachedStart = performance.now();
-    for (let i = 0; i < N; i += 1) {
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/New_York",
-        hour: "numeric",
-        minute: "2-digit",
-        second: "2-digit",
-        fractionalSecondDigits: 3,
-        hour12: true,
-        timeZoneName: "short",
-      }).format(new Date(i * 1000));
-    }
-    const uncachedElapsed = performance.now() - uncachedStart;
-
-    // Cached path must be at least 2x faster than per-call construction.
-    // Real ratio on Node 22 is ~10-50x; 2x is the noise floor.
-    expect(cachedElapsed * 2).toBeLessThan(uncachedElapsed);
-  });
-});
+// VOI-389 round-5 (codex anti-rot): the previous wall-clock
+// throughput tests ("10k calls < 100ms" and its RELATIVE cached-vs-
+// uncached successor) are exactly the flake-risk CLAUDE.md § Anti-rot
+// names — both could trip on a thermally-throttled or contended CI
+// runner for environmental reasons even when the module's Intl cache
+// is intact. Removed per "Trustworthy or gone — a flaky / false-
+// positive-prone gate is worse than none". The module-scope formatter
+// reuse contract is enforced by code review (the file is 99 lines and
+// any per-call `new Intl.DateTimeFormat` would be obvious) and by the
+// EST/EDT correctness tests above that exercise the cached path
+// thousands of times across the suite without budget assertions.

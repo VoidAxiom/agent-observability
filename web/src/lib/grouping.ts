@@ -977,7 +977,17 @@ function traceGroups(rows: SpanRow[]): TraceGroup[] {
   for (const [traceId, traceRows] of byTrace) {
     const orderedRows = computeTreeOrder(traceRows);
     const dates = datedRows(traceRows);
-    const firstDate = minBy(dates, (d) => d.date);
+    // VOI-389 round-5 (codex P2 altitude fix): the prior minBy(dates)
+    // returned the DISTANT_PAST sentinel for any trace with ONE bad
+    // child Timestamp, poisoning rootStart even when most spans had
+    // valid times. Filter sentinels BEFORE picking the min so trace
+    // consumers (DetailsPane, WaterfallShell, the waterfall axis)
+    // can trust trace.rootStart without re-deriving from spans. When
+    // every Timestamp is unparseable, firstDate is undefined and the
+    // ternary below falls back to DISTANT_PAST — preserving the
+    // existing "all-unparseable" contract.
+    const parseable = dates.filter((d) => d.date !== DISTANT_PAST);
+    const firstDate = minBy(parseable, (d) => d.date);
     const last = latestEndingRow(dates);
 
     const headSpanName = orderedRows[0]?.SpanName ?? "";
@@ -1125,6 +1135,28 @@ function minBy<T>(values: T[], score: (v: T) => number): T | null {
     }
   }
   return best;
+}
+
+/**
+ * Earliest parseable span Timestamp across `spans`, in ms-since-epoch.
+ * Returns NaN when no span has a parseable Timestamp.
+ *
+ * VOI-389 round-5 (codex altitude fix): the same min-of-parseable loop
+ * was open-coded in Waterfall.buildLayout and WaterfallShell. Extracting
+ * to grouping (next to parseTimestamp / DISTANT_PAST) gives a single
+ * source of truth — a future tweak (e.g. tie-break, ignore negative
+ * times) lands in one place. trace.rootStart in the TraceGroup is now
+ * the canonical authority and consumers should prefer that; this helper
+ * is for surfaces that receive a span list but no enclosing TraceGroup.
+ */
+export function earliestParseableStart(spans: SpanRow[]): number {
+  let min = Number.POSITIVE_INFINITY;
+  for (const s of spans) {
+    const t = parseTimestamp(s.Timestamp);
+    if (t === null) continue;
+    if (t < min) min = t;
+  }
+  return min === Number.POSITIVE_INFINITY ? Number.NaN : min;
 }
 
 /**

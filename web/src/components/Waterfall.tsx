@@ -32,7 +32,7 @@ import {
 } from "react";
 import gsap from "gsap";
 import { spanRowId, type SpanRow } from "../lib/grouping";
-import { parseTimestamp } from "../lib/grouping";
+import { earliestParseableStart, parseTimestamp } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
 import { buildEdgeKey, useCrossProcessStore } from "../lib/crossProcessStore";
 import { bestContrastTextOn } from "../lib/bestContrast";
@@ -66,6 +66,11 @@ const LEFT_GUTTER = 0;
 const RIGHT_PAD = 8;
 const MIN_BAR_WIDTH = 1;
 const DEFAULT_WIDTH = 640;
+// Minimum innerWidth pixels per absolute EST/EDT tick label
+// (~130px label + breathing room). Lifted from the willShowAbsoluteRow
+// gate and the maxAbsoluteLabels slot count so both stay in lockstep —
+// VOI-389 round-5 codex P2 (gate-drift risk).
+const ABSOLUTE_LABEL_SLOT_PX = 200;
 
 interface BarLayout {
   span: SpanRow;
@@ -142,14 +147,14 @@ export function Waterfall({
 
   // Determine whether the absolute EST/EDT label row will render at all
   // BEFORE buildLayout so the same axis height drives bar Y and the
-  // SVG geometry. Conditions match the gates inside TimeAxis below.
-  // VOI-389: claude /code-review round-4 P3 2026-05-31.
+  // SVG geometry. Conditions match the gates inside TimeAxis below
+  // (both use ABSOLUTE_LABEL_SLOT_PX and the same "any parseable
+  // Timestamp" predicate). VOI-389: claude /code-review round-4 P3
+  // 2026-05-31; codex round-5 collapsed the predicate to the shared
+  // earliestParseableStart helper.
   const willShowAbsoluteRow = useMemo(() => {
-    if (Math.floor(innerWidth / 200) <= 0) return false;
-    for (const s of spans) {
-      if (parseTimestamp(s.Timestamp) !== null) return true;
-    }
-    return false;
+    if (Math.floor(innerWidth / ABSOLUTE_LABEL_SLOT_PX) <= 0) return false;
+    return Number.isFinite(earliestParseableStart(spans));
   }, [spans, innerWidth]);
   const axisHeight = willShowAbsoluteRow
     ? TIME_AXIS_HEIGHT_WITH_ABSOLUTE
@@ -641,7 +646,7 @@ function TimeAxis({
   // absolute-time row entirely rather than crowding the axis. Spec
   // permits 3-5 labels at typical widths; at sub-200px the relative-
   // duration ticks still render. Claude /code-review P2 2026-05-31.
-  const maxAbsoluteLabels = Math.min(5, Math.floor(innerWidth / 200));
+  const maxAbsoluteLabels = Math.min(5, Math.floor(innerWidth / ABSOLUTE_LABEL_SLOT_PX));
   // Pick evenly-spaced major-tick indices that anchor both endpoints:
   // for K labels and N majors, picks indices round(i * (N-1) / (K-1))
   // so index 0 → first major and index K-1 → last major; intermediate
@@ -667,12 +672,13 @@ function TimeAxis({
   // ~130px wide ("HH:MM:SS AM/PM EDT"). Rendered at x+2 with default
   // textAnchor=start, a label whose x is anywhere near the right edge
   // of innerWidth runs past the SVG boundary and gets clipped (SVG
-  // overflow defaults to hidden). For ticks within RIGHT_EDGE_MARGIN
-  // of innerWidth, anchor the absolute label end-aligned at x-2 so it
-  // grows leftward instead — losing the timezone suffix was the exact
-  // regression. The major-tick numeric labels (~30px wide) get the
-  // same treatment for symmetry; they previously fit only because the
-  // strings were short.
+  // overflow defaults to hidden). For ticks too close to the right
+  // edge, anchor end-aligned at x-2 so the label grows leftward
+  // instead — losing the timezone suffix was the exact regression.
+  // The major-tick numeric labels (~36px wide) get the same treatment
+  // for symmetry; they previously fit only because the strings were
+  // short. Anchor flags are computed lazily inside the major branch
+  // so minor ticks (~80% of ticks) don't pay the cost.
   const ABSOLUTE_LABEL_PX = 130;
   const TICK_LABEL_PX = 36;
   const rightEdge = originX + innerWidth;
@@ -681,9 +687,6 @@ function TimeAxis({
     <g aria-hidden="true">
       {ticks.map(({ ms, major }, idx) => {
         const x = originX + (ms / durationMs) * innerWidth;
-        const showAbsolute = major && absoluteMsSet.has(ms);
-        const absoluteAnchorEnd = rightEdge - x < ABSOLUTE_LABEL_PX;
-        const tickAnchorEnd = rightEdge - x < TICK_LABEL_PX;
         return (
           <g key={`tick-${idx}-${ms}`}>
             <line
@@ -693,27 +696,34 @@ function TimeAxis({
               y1={height - 6}
               y2={totalHeight}
             />
-            {major ? (
-              <text
-                className="voi-waterfall-tick-label"
-                x={tickAnchorEnd ? x - 2 : x + 2}
-                y={height - 8}
-                textAnchor={tickAnchorEnd ? "end" : "start"}
-              >
-                {formatTickMs(ms)}
-              </text>
-            ) : null}
-            {showAbsolute ? (
-              <text
-                className="voi-waterfall-tick-label"
-                data-absolute-tick="true"
-                x={absoluteAnchorEnd ? x - 2 : x + 2}
-                y={height - 20}
-                textAnchor={absoluteAnchorEnd ? "end" : "start"}
-              >
-                {formatAbsoluteEst(traceStartMs + ms)}
-              </text>
-            ) : null}
+            {major ? (() => {
+              const showAbsolute = absoluteMsSet.has(ms);
+              const tickAnchorEnd = rightEdge - x < TICK_LABEL_PX;
+              const absoluteAnchorEnd = rightEdge - x < ABSOLUTE_LABEL_PX;
+              return (
+                <>
+                  <text
+                    className="voi-waterfall-tick-label"
+                    x={tickAnchorEnd ? x - 2 : x + 2}
+                    y={height - 8}
+                    textAnchor={tickAnchorEnd ? "end" : "start"}
+                  >
+                    {formatTickMs(ms)}
+                  </text>
+                  {showAbsolute ? (
+                    <text
+                      className="voi-waterfall-tick-label"
+                      data-absolute-tick="true"
+                      x={absoluteAnchorEnd ? x - 2 : x + 2}
+                      y={height - 20}
+                      textAnchor={absoluteAnchorEnd ? "end" : "start"}
+                    >
+                      {formatAbsoluteEst(traceStartMs + ms)}
+                    </text>
+                  ) : null}
+                </>
+              );
+            })() : null}
           </g>
         );
       })}

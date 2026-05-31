@@ -20,6 +20,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { DetailsPane } from "../src/components/DetailsPane";
+import { groupSpans } from "../src/lib/grouping";
 import type { SessionGroup, SpanRow, TraceGroup } from "../src/lib/grouping";
 
 function span(overrides: Partial<SpanRow> & {
@@ -282,17 +283,15 @@ describe("DetailsPane — TRACE mode", () => {
     expect(container.textContent).toContain("errors");
   });
 
-  it("includes an EST/EDT 'started' MiniStat derived from span Timestamps (VOI-389)", () => {
-    // VOI-389 round-5 (codex P2): the rendered 'started' value is now
-    // derived from the spans' parseable Timestamps (mirroring
-    // WaterfallShell), NOT from trace.rootStart — the grouping layer
-    // collapses any malformed row to a DISTANT_PAST sentinel that
-    // poisons rootStart for partially-valid traces.
-    // Span Timestamp = July 15 2026 14:32:47 UTC -> 10:32:47 AM EDT
+  it("includes an EST/EDT 'started' MiniStat from trace.rootStart (VOI-389)", () => {
+    // rootStart = July 15 2026 14:32:47 UTC -> 10:32:47 AM EDT.
+    // Component reads trace.rootStart directly; grouping is now the
+    // unit of truth for sentinel filtering (codex round-5 altitude fix).
     const t = trace({
       id: "trace-time",
       displayLabel: "trace-time",
       durationSeconds: 1.2,
+      rootStart: Date.UTC(2026, 6, 15, 14, 32, 47),
       spans: [
         span({
           TraceId: "trace-time",
@@ -306,9 +305,10 @@ describe("DetailsPane — TRACE mode", () => {
     expect(container.textContent).toMatch(/10:32:47 AM EDT/);
   });
 
-  it("renders -- when every span Timestamp is unparseable", () => {
+  it("renders -- when trace.rootStart is the DISTANT_PAST sentinel", () => {
     const t = trace({
       id: "trace-no-time",
+      rootStart: -8.64e15,
       spans: [
         span({
           TraceId: "trace-no-time",
@@ -325,43 +325,70 @@ describe("DetailsPane — TRACE mode", () => {
     expect(startedLabel?.previousElementSibling?.textContent).toBe("--");
   });
 
-  it("uses earliest parseable span Timestamp even if other spans are malformed (codex P2 round-5)", () => {
-    // The exact failure mode codex flagged: trace.rootStart is poisoned
-    // to the DISTANT_PAST sentinel because grouping maps the malformed
-    // child to it and then min()s, but the trace still has valid spans
-    // that the waterfall can render. The 'started' MiniStat must agree
-    // with the waterfall, not with the poisoned rootStart.
+  it("does not surface a '--' browser title when rootStart is sentinel (codex P2 round-5)", () => {
+    // Hovering a MiniStat whose value is "--" must not pop a browser
+    // tooltip that just repeats "--". The title prop is suppressed
+    // (undefined) in the sentinel branch.
     const t = trace({
-      id: "trace-mixed",
-      // Simulate the poisoned rootStart that grouping would produce.
+      id: "trace-no-time-title",
       rootStart: -8.64e15,
       spans: [
-        // Root has a clean parseable Timestamp at 10:32:47 AM EDT.
         span({
-          TraceId: "trace-mixed",
+          TraceId: "trace-no-time-title",
           SpanId: "r",
-          Timestamp: "2026-07-15T14:32:47.000000000",
-        }),
-        // Child has a malformed Timestamp — would have pushed
-        // grouping's min() to DISTANT_PAST under the old derivation.
-        span({
-          TraceId: "trace-mixed",
-          SpanId: "c",
-          ParentSpanId: "r",
-          Timestamp: "garbage",
-        }),
-        // Another valid child, slightly later.
-        span({
-          TraceId: "trace-mixed",
-          SpanId: "c2",
-          ParentSpanId: "r",
-          Timestamp: "2026-07-15T14:32:48.000000000",
+          Timestamp: "not-a-timestamp",
         }),
       ],
     });
     const { container } = render(<DetailsPane span={null} trace={t} session={null} nowMs={0} />);
+    const startedLabel = Array.from(container.querySelectorAll("span"))
+      .find((el) => el.textContent === "// started");
+    const miniStat = startedLabel?.parentElement as HTMLElement | null;
+    // No browser-native title attribute — would render a literal "--"
+    // tooltip otherwise.
+    expect(miniStat?.getAttribute("title")).toBeNull();
+  });
+
+  it("trace.rootStart is the earliest PARSEABLE span Timestamp (integration through groupSpans — codex P2 round-5 altitude fix)", () => {
+    // The exact failure mode codex flagged: grouping used to map any
+    // unparseable Timestamp to DISTANT_PAST and then minBy across the
+    // trace, poisoning rootStart for partially-valid traces. The fix
+    // lives in grouping (filter sentinels BEFORE picking the min).
+    // This integration test feeds raw SpanRow[] through the REAL
+    // groupSpans pipeline and renders the resulting TraceGroup through
+    // DetailsPane — so a future refactor that re-introduces sentinel
+    // poisoning still trips this test, even if the component-level
+    // workaround is later re-added.
+    const rows: SpanRow[] = [
+      // Root has a clean parseable Timestamp at 10:32:47 AM EDT.
+      span({
+        TraceId: "trace-mixed",
+        SpanId: "r",
+        Timestamp: "2026-07-15T14:32:47.000000000",
+      }),
+      // Malformed child — would have poisoned rootStart pre-fix.
+      span({
+        TraceId: "trace-mixed",
+        SpanId: "c1",
+        ParentSpanId: "r",
+        Timestamp: "garbage",
+      }),
+      // Another valid child, slightly later.
+      span({
+        TraceId: "trace-mixed",
+        SpanId: "c2",
+        ParentSpanId: "r",
+        Timestamp: "2026-07-15T14:32:48.000000000",
+      }),
+    ];
+    const sessions = groupSpans(rows);
+    const builtTrace = sessions[0]?.traces[0];
+    expect(builtTrace).toBeDefined();
+    const { container } = render(
+      <DetailsPane span={null} trace={builtTrace!} session={null} nowMs={0} />,
+    );
     // Earliest parseable span = 10:32:47 AM EDT; sentinel-derived
-    // rootStart is ignored.
+    // rootStart is no longer produced by groupSpans.
     expect(container.textContent).toMatch(/10:32:47 AM EDT/);
     const startedLabel = Array.from(container.querySelectorAll("span"))
       .find((el) => el.textContent === "// started");
