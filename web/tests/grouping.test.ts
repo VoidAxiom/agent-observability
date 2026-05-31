@@ -995,18 +995,49 @@ describe("groupSpansToTree (VOI-386)", () => {
     expect(subB.children.length).toBe(0);
   });
 
-  it("SpanId collision across sessions does NOT misdirect the codex parent walk (codex P2 2026-05-31)", () => {
+  it("SpanId collision across sessions does NOT misdirect the codex parent walk (codex P2 round-2 2026-05-31)", () => {
     // SpanIds are 64-bit (16-hex); collisions across in-window traces /
-    // sessions are rare but realistic with fixture replays and idempotent
-    // ingestion. The walker is keyed by SpanId only (codex stamps don't
-    // carry agent.parent.trace.id), so without per-step session scoping a
-    // colliding SpanId in a DIFFERENT session would send the walk into
-    // unrelated ancestry. Test: same SpanId 'shared-span' exists in both
-    // sess-X (legitimate subagent ancestor) AND sess-Y (unrelated). The
-    // codex stamped to sess-X must resolve into sess-X's subagent, not
-    // sess-Y's.
+    // sessions are rare but realistic with fixture replays, idempotent
+    // ingestion, and busy multi-trace windows. Codex stamps
+    // agent.parent.span.id WITHOUT an accompanying agent.parent.trace.id,
+    // so the walker needs a SpanId-keyed lookup that is SAFE against
+    // cross-session collisions.
+    //
+    // Critical detail: ClickHouse polling uses `ORDER BY Timestamp DESC`,
+    // so rows arrive newest-first. The fixture below inserts the WRONG-
+    // session collision row (sess-Y) BEFORE the legitimate row (sess-X).
+    // A first-wins-by-SpanId map would bind 'shared-span' to sess-Y's
+    // row; the round-1 fix added a "reject if row.SessionId !=
+    // parentSessionId" guard but the guard TERMINATES the walk instead
+    // of finding the legitimate row — so the codex falls back to tier-2
+    // (claude root) and the test would see sub-X.children.length === 0.
+    // The round-2 fix keys the bucket itself by (sessionId, spanId) so
+    // both collision candidates are addressable, and the walker scopes
+    // lookup via the codex's stamped parent.session.id.
     const forest = groupSpansToTree([
-      // Session X: real ancestry path the codex stamps points into.
+      // WRONG-SESSION COLLISION ROW FIRST (mimics ORDER BY DESC newest-
+      // first ingestion). Session Y has a span with SpanId='shared-span'.
+      claudeSpan({
+        sessionId: "sess-Y",
+        spanId: "y-root",
+        timestamp: "2026-01-01T00:00:10.000000000",
+      }),
+      claudeSpan({
+        sessionId: "sess-Y",
+        spanId: "y-dispatch",
+        parentSpanId: "y-root",
+        timestamp: "2026-01-01T00:00:11.000000000",
+        subagentType: "sub-Y",
+      }),
+      claudeSpan({
+        sessionId: "sess-Y",
+        // SAME SpanId as sess-X's subagent ancestor below. Inserted FIRST.
+        spanId: "shared-span",
+        parentSpanId: "y-dispatch",
+        timestamp: "2026-01-01T00:00:12.000000000",
+        agentId: "agent-Y",
+      }),
+      // Session X: the legitimate ancestry the codex stamps point into.
       claudeSpan({
         sessionId: "sess-X",
         spanId: "x-root",
@@ -1021,40 +1052,16 @@ describe("groupSpansToTree (VOI-386)", () => {
       }),
       claudeSpan({
         sessionId: "sess-X",
+        // Colliding SpanId — inserted SECOND. A first-wins-by-SpanId map
+        // would hide this row behind sess-Y's.
         spanId: "shared-span",
         parentSpanId: "x-dispatch",
         timestamp: "2026-01-01T00:00:03.000000000",
         agentId: "agent-X",
       }),
-      // Session Y: an UNRELATED session that happens to also have a span
-      // whose SpanId collides with sess-X's. Different ancestry, different
-      // subagent. Inserted FIRST in stream order — first-wins on the map
-      // would put this Y row in spanBySpanId.
-      claudeSpan({
-        sessionId: "sess-Y",
-        spanId: "y-root",
-        timestamp: "2026-01-01T00:00:10.000000000",
-      }),
-      claudeSpan({
-        sessionId: "sess-Y",
-        spanId: "y-dispatch",
-        parentSpanId: "y-root",
-        timestamp: "2026-01-01T00:00:11.000000000",
-        subagentType: "sub-Y",
-      }),
-      // Subagent work span under sub-Y (dispatch finds first descendant
-      // agent_id via the children-by-parent walker). Without a real
-      // descendant carrying an agent_id, the subagent never materializes.
-      claudeSpan({
-        sessionId: "sess-Y",
-        spanId: "y-sub-w",
-        parentSpanId: "y-dispatch",
-        timestamp: "2026-01-01T00:00:12.000000000",
-        agentId: "agent-Y",
-      }),
-      // Codex stamped to sess-X. parent.span.id = 'shared-span', but
-      // the global map's entry for 'shared-span' is whichever inserted
-      // first. The walker MUST reject rows whose SessionId != sess-X.
+      // Codex stamped to sess-X. parent.span.id='shared-span' must
+      // resolve into sess-X's subagent, not sess-Y's, even though Y's
+      // row was indexed first.
       codexSpan({
         codexSessionId: "codex-X",
         spanId: "cx-1",
@@ -1064,8 +1071,9 @@ describe("groupSpansToTree (VOI-386)", () => {
       }),
     ]);
 
-    // The codex must be nested under sub-X (resolved via tier-1 walker),
-    // not under sub-Y (different session) and not orphaned/tier-2-only.
+    // The codex must be nested under sub-X (resolved via tier-1 walker
+    // with (sessionId, spanId) keyed lookup), NOT under sub-Y and NOT
+    // orphaned/tier-2'd to the claude root.
     const rootX = findRootBySession(forest, "sess-X");
     expect(rootX.children.length).toBe(1);
     const subX = rootX.children[0]!;

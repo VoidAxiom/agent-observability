@@ -151,15 +151,29 @@ export function groupSpansToTree(rows: SpanRow[]): SessionNode[] {
   // Index every span globally by (traceId, spanId) so the codex parent.span.id
   // walk has O(1) ancestor lookup. Cycle safety in the walker is enforced
   // separately by a per-walk visited set; this map is purely lookup.
-  // Also build a SpanId-only side index ONCE here (codex stamps don't carry
-  // the parent's TraceId; the walker needs SpanId-only lookup). Building it
-  // here — outside resolveCodexParent — means we do the work once instead
-  // of once per codex session (Claude /code-review P2 #3, 2026-05-31).
+  // Also build a (sessionId, spanId) side index ONCE here (codex stamps
+  // don't carry the parent's TraceId; the walker needs SpanId-keyed lookup
+  // but must be SAFE against SpanId collisions across sessions). Codex
+  // round-2 P2 2026-05-31: a first-wins-by-SpanId map combined with
+  // ClickHouse's `ORDER BY Timestamp DESC` ingestion can hide the
+  // legitimate row when the colliding row belongs to a different session
+  // — even if the walker rejects mismatched-session rows, it terminates
+  // at the wrong row and misses the real ancestry. Keying by
+  // (sessionId, spanId) keeps all collision candidates addressable; the
+  // walker scopes lookup via the codex's stamped parent.session.id so
+  // cross-session collisions are physically unreachable.
   const spanByGlobalId = new Map<string, SpanRow>();
-  const spanBySpanId = new Map<string, SpanRow>();
+  const spanBySessionSpan = new Map<string, SpanRow>();
+  const sessionSpanKey = (sessionId: string, spanId: string): string =>
+    `${sessionId}::${spanId}`;
   for (const row of rows) {
     spanByGlobalId.set(globalSpanId(row), row);
-    if (!spanBySpanId.has(row.SpanId)) spanBySpanId.set(row.SpanId, row);
+    // First-wins within a (sessionId, spanId) bucket — a legitimate
+    // duplicate of the SAME row across a re-ingestion window will pick
+    // either copy; both have identical SessionId/ParentSpanId/agent_id
+    // by construction.
+    const key = sessionSpanKey(row.SessionId, row.SpanId);
+    if (!spanBySessionSpan.has(key)) spanBySessionSpan.set(key, row);
   }
 
   // Partition rows into the buckets the algorithm needs.
@@ -219,7 +233,8 @@ export function groupSpansToTree(rows: SpanRow[]): SessionNode[] {
     const node = buildCodexNode(codexSessionId, codexRows);
     const parent = resolveCodexParent(
       codexRows,
-      spanBySpanId,
+      spanBySessionSpan,
+      sessionSpanKey,
       subagentNodeByKey,
       subagentKey,
       claudeNodesBySession,
@@ -519,7 +534,8 @@ function buildCodexNode(codexSessionId: string, codexRows: SpanRow[]): SessionNo
  */
 function resolveCodexParent(
   codexRows: SpanRow[],
-  spanBySpanId: Map<string, SpanRow>,
+  spanBySessionSpan: Map<string, SpanRow>,
+  sessionSpanKey: (sessionId: string, spanId: string) => string,
   subagentNodeByKey: Map<string, SessionNode>,
   subagentKey: (sessionId: string, agentId: string) => string,
   claudeNodesBySession: Map<string, SessionNode>,
@@ -536,14 +552,14 @@ function resolveCodexParent(
     first.ResourceAttributesRaw["agent.parent.session.id"] ?? "";
 
   // Tier 1: walk up parent.span.id to find a subagent ancestor. The
-  // walk is scoped to the codex's stamped parent.session.id so we don't
-  // match an agent_id that happens to collide across sessions — Claude
-  // /code-review P2 #2, 2026-05-31.
+  // walk is keyed by (parentSessionId, spanId) so cross-session SpanId
+  // collisions are physically unreachable — codex P2 round-2 2026-05-31.
   if (parentSpanId !== "" && parentSessionId !== "") {
     const subagentAncestor = walkToSubagentAncestor(
       parentSpanId,
       parentSessionId,
-      spanBySpanId,
+      spanBySessionSpan,
+      sessionSpanKey,
       subagentNodeByKey,
       subagentKey,
     );
@@ -563,28 +579,34 @@ function resolveCodexParent(
 function walkToSubagentAncestor(
   startSpanId: string,
   parentSessionId: string,
-  spanBySpanId: Map<string, SpanRow>,
+  spanBySessionSpan: Map<string, SpanRow>,
+  sessionSpanKey: (sessionId: string, spanId: string) => string,
   subagentNodeByKey: Map<string, SessionNode>,
   subagentKey: (sessionId: string, agentId: string) => string,
 ): SessionNode | null {
-  // The lookup map is keyed by SpanId alone — codex stamps
+  // Look up rows by (parentSessionId, spanId). Codex stamps
   // agent.parent.span.id without an accompanying agent.parent.trace.id,
-  // so we can't pre-scope by trace. SpanIds are 64-bit (16 hex) and
-  // collisions are rare but realistic across fixture replays, idempotent
-  // ingestion, and busy multi-trace windows. Guard against the collision
-  // case by rejecting any walker step whose row's SessionId doesn't match
-  // the codex's stamped parent session: a span from a DIFFERENT claude
-  // session can't be on the legitimate ancestry path (codex P2 2026-05-31).
+  // so we can't pre-scope by trace; SpanIds are 64-bit (16 hex) and
+  // collisions across fixture replays / idempotent ingestion / busy
+  // multi-trace windows are realistic. Round-1 used a SpanId-keyed map
+  // with a "reject if row.SessionId != parentSessionId" guard, but
+  // ClickHouse's `ORDER BY Timestamp DESC` ingestion can populate the
+  // first-wins bucket with the wrong-session row — the guard then
+  // terminated the walk INSTEAD of finding the legitimate one. Keying
+  // the bucket itself by (sessionId, spanId) keeps every collision
+  // candidate addressable AND makes cross-session resolution physically
+  // impossible (codex P2 round-2 2026-05-31).
   const visited = new Set<string>();
   let currentSpanId: string = startSpanId;
   let depth = 0;
-  const maxDepth = Math.min(1000, spanBySpanId.size);
+  const maxDepth = Math.min(1000, spanBySessionSpan.size);
   while (currentSpanId !== "" && depth < maxDepth) {
     if (visited.has(currentSpanId)) return null;
     visited.add(currentSpanId);
-    const row = spanBySpanId.get(currentSpanId);
+    const row = spanBySessionSpan.get(
+      sessionSpanKey(parentSessionId, currentSpanId),
+    );
     if (!row) return null;
-    if (row.SessionId !== parentSessionId) return null;
     const agentId = row.SpanAttributesRaw["agent_id"] ?? "";
     if (agentId !== "") {
       const subagent = subagentNodeByKey.get(
