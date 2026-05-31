@@ -53,10 +53,10 @@ function trace(over: Partial<TraceGroup> & { id: string; spans?: SpanRow[] }): T
     id: over.id,
     traceId: over.id,
     displayLabel: over.displayLabel ?? over.id,
-    rootStart: 0,
-    rootStartText: "",
-    lastActivity: 0,
-    lastActivityText: "",
+    rootStart: over.rootStart ?? 0,
+    rootStartText: over.rootStartText ?? "",
+    lastActivity: over.lastActivity ?? 0,
+    lastActivityText: over.lastActivityText ?? "",
     spanCount: spans.length,
     durationSeconds: over.durationSeconds ?? 12.345,
     hasError: over.hasError ?? false,
@@ -282,6 +282,34 @@ describe("DetailsPane — TRACE mode", () => {
     expect(container.textContent).toContain("errors");
   });
 
+  it("includes an EST/EDT 'started' MiniStat when rootStart is set (VOI-389)", () => {
+    // rootStart = July 15 2026 14:32:47 UTC -> 10:32:47 AM EDT
+    const t = trace({
+      id: "trace-time",
+      displayLabel: "trace-time",
+      durationSeconds: 1.2,
+      rootStart: Date.UTC(2026, 6, 15, 14, 32, 47),
+      spans: [span({ TraceId: "trace-time", SpanId: "r" })],
+    });
+    const { container } = render(<DetailsPane span={null} trace={t} session={null} nowMs={0} />);
+    expect(container.textContent).toContain("started");
+    expect(container.textContent).toMatch(/10:32:47 AM EDT/);
+  });
+
+  it("renders -- for an unparseable rootStart (DISTANT_PAST sentinel)", () => {
+    const t = trace({
+      id: "trace-no-time",
+      rootStart: -8.64e15,
+      spans: [span({ TraceId: "trace-no-time", SpanId: "r" })],
+    });
+    const { container } = render(<DetailsPane span={null} trace={t} session={null} nowMs={0} />);
+    // The started MiniStat exists but its value is the "--" fallback so
+    // we don't render a bogus 1900s timestamp from the sentinel.
+    const startedLabel = Array.from(container.querySelectorAll("span"))
+      .find((el) => el.textContent === "// started");
+    expect(startedLabel?.previousElementSibling?.textContent).toBe("--");
+  });
+
   it("errorCount uses rowHasError (counts exception.* keys + error attr, not just StatusCode='ERROR')", () => {
     const t = trace({
       id: "trace-E",
@@ -328,7 +356,7 @@ describe("DetailsPane — TRACE mode", () => {
 });
 
 describe("DetailsPane — SESSION mode", () => {
-  it("with session but no trace/span, renders session hero", () => {
+  it("with session but no trace/span, renders session hero + EST last_activity (VOI-389)", () => {
     const s = session({
       id: "session-S",
       displayLabel: "session-S",
@@ -343,7 +371,16 @@ describe("DetailsPane — SESSION mode", () => {
     expect(heroBand.textContent).toContain("382");
     expect(container.textContent).toContain("traces");
     expect(container.textContent).toContain("last_activity");
-    expect(container.textContent).toContain("12s ago");
+    // VOI-389: visible value is now the absolute EST/EDT clock time
+    // (HH:MM:SS AM/PM EST or EDT). The relative-seconds form moved into
+    // the hover title so absolute and relative both stay reachable.
+    expect(container.textContent ?? "").toMatch(/\d{1,2}:\d{2}:\d{2} (AM|PM) E[SD]T/);
+    // Title carries the relative-seconds form so log-correlation still
+    // works from the same row.
+    const lastActivityValue = Array.from(container.querySelectorAll("span"))
+      .find((el) => el.textContent === "// last_activity")
+      ?.parentElement;
+    expect(lastActivityValue?.getAttribute("title") ?? "").toContain("12s ago");
   });
 });
 

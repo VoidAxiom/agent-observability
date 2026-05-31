@@ -314,6 +314,34 @@ describe("SessionSidebar", () => {
     ).toBeNull();
   });
 
+  it("renders absolute EST/EDT last-activity time on each row + title carries the date (VOI-389)", () => {
+    // Pin lastActivity to a deterministic UTC instant so the assertion
+    // doesn't depend on Date.now() timing. July 15 2026 14:32:47 UTC ->
+    // 10:32:47 AM EDT in America/New_York.
+    const lastActivityMs = Date.UTC(2026, 6, 15, 14, 32, 47);
+    const s = makeSession({ id: "abc", serviceName: "claude-code" });
+    s.lastActivity = lastActivityMs;
+    const { container } = render(
+      <SessionSidebar
+        sessions={[s]}
+        selectedSessionId={null}
+        onSelect={() => undefined}
+        expandedNodeIds={EMPTY_EXPANDED as Set<string>}
+        onToggleExpand={NOOP_TOGGLE}
+        nowMs={lastActivityMs + 5000}
+      />,
+    );
+    // The row meta line carries the absolute clock time.
+    const timeMeta = container.querySelector('[data-meta-time="true"]');
+    expect(timeMeta?.textContent ?? "").toContain("10:32:47 AM EDT");
+    // The row button's title carries the date+time + relative age so the
+    // operator can correlate across days without losing the relative form.
+    const row = container.querySelector('[data-session-id="abc"]') as HTMLElement;
+    const titleAttr = row.getAttribute("title") ?? "";
+    expect(titleAttr).toMatch(/Jul 15, 10:32:47 AM EDT/);
+    expect(titleAttr).toContain("5s ago");
+  });
+
   it("invokes onSelect with the session id when row clicked", () => {
     const onSelect = vi.fn();
     const sessions = [makeSession({ id: "abc", serviceName: "claude-code" })];

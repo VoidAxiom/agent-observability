@@ -27,6 +27,7 @@ import {
   type GroupedAttributes,
 } from "../lib/attributeGroups";
 import { formatHeroDurationMs, formatHeroMagnitude } from "../lib/formatHero";
+import { formatAbsoluteEst, formatAbsoluteEstWithDate } from "../lib/formatTime";
 import "./DetailsPane.css";
 
 export interface DetailsPaneProps {
@@ -239,6 +240,15 @@ function TraceDetails({ trace }: TraceDetailsProps) {
         <MiniStat label="spans" value={String(trace.spanCount)} />
         <MiniStat label="errors" value={String(errorCount)} />
         <MiniStat label="services" value={String(services.length)} />
+        {/* VOI-389: absolute EST wall-clock start. trace.rootStart is the
+            DISTANT_PAST sentinel when every span's Timestamp failed to
+            parse — formatAbsoluteEst() returns "--" in that case rather
+            than rendering a bogus 1970 timestamp. */}
+        <MiniStat
+          label="started"
+          value={formatAbsoluteEst(trace.rootStart)}
+          title={formatAbsoluteEstWithDate(trace.rootStart)}
+        />
       </div>
 
       <p style={summaryCommentStyle}>
@@ -263,6 +273,11 @@ function SessionDetails({ session, nowMs }: SessionDetailsProps) {
     0,
     Math.round((nowMs - session.lastActivity) / 1000),
   );
+  // VOI-389: prefer absolute EST wall-clock for the visible value; keep
+  // the relative-seconds form in the hover title so operators correlating
+  // against logs still get the secondary signal.
+  const lastActivityAbs = formatAbsoluteEst(session.lastActivity);
+  const lastActivityTitle = `${formatAbsoluteEstWithDate(session.lastActivity)} · ${lastActivitySeconds}s ago`;
 
   const heroDisplay = formatHeroMagnitude(session.spanCount);
   const heroExact = session.spanCount.toLocaleString("en-US");
@@ -292,7 +307,11 @@ function SessionDetails({ session, nowMs }: SessionDetailsProps) {
 
       <div style={miniStatsRowStyle}>
         <MiniStat label="traces" value={String(session.traceCount)} />
-        <MiniStat label="last_activity" value={`${lastActivitySeconds}s ago`} />
+        <MiniStat
+          label="last_activity"
+          value={lastActivityAbs}
+          title={lastActivityTitle}
+        />
       </div>
 
       <p style={summaryCommentStyle}>
@@ -327,11 +346,17 @@ function HeroCell({ numeral }: HeroCellProps) {
 interface MiniStatProps {
   label: string;
   value: string;
+  /**
+   * Optional title for hover — used by VOI-389 to surface the date +
+   * relative-seconds form on the EST absolute-time MiniStats without
+   * losing the secondary context.
+   */
+  title?: string;
 }
 
-function MiniStat({ label, value }: MiniStatProps) {
+function MiniStat({ label, value, title }: MiniStatProps) {
   return (
-    <div style={miniStatStyle}>
+    <div style={miniStatStyle} title={title}>
       <span style={miniStatValueStyle}>{value}</span>
       <span style={miniStatLabelStyle}>{`// ${label}`}</span>
     </div>

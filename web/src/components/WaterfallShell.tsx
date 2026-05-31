@@ -7,8 +7,10 @@
  * surface needs to read it.
  */
 
-import { type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { Waterfall, type WaterfallProps } from "./Waterfall";
+import { parseTimestamp } from "../lib/grouping";
+import { formatAbsoluteEstWithDate } from "../lib/formatTime";
 
 export interface WaterfallShellProps extends WaterfallProps {
   /**
@@ -42,7 +44,25 @@ export function WaterfallShell({
   ...waterfallProps
 }: WaterfallShellProps) {
   const spans = waterfallProps.spans;
-  const chipText = `// waterfall · ${spans.length} spans · ${durationSeconds.toFixed(3)}s`;
+  // VOI-389: surface the trace's wall-clock start as an EST/EDT chip so
+  // the operator can read absolute context without leaving the waterfall.
+  // Derive the start from the spans' parseable Timestamps (mirrors the
+  // min-start logic in Waterfall.buildLayout) rather than threading a new
+  // prop through App.tsx — that file is owned by a parallel packet
+  // (VOI-388) and out of this packet's allowlist. The DISTANT_PAST
+  // sentinel / all-unparseable case yields `-Infinity` here, which the
+  // formatter's fallback renders as "--".
+  const rootStartMs = useMemo(() => {
+    let min = Number.POSITIVE_INFINITY;
+    for (const s of spans) {
+      const t = parseTimestamp(s.Timestamp);
+      if (t === null) continue;
+      if (t < min) min = t;
+    }
+    return min === Number.POSITIVE_INFINITY ? Number.NaN : min;
+  }, [spans]);
+  const startedAbs = formatAbsoluteEstWithDate(rootStartMs);
+  const chipText = `// waterfall · ${spans.length} spans · ${durationSeconds.toFixed(3)}s · started ${startedAbs}`;
 
   return (
     // Plain <div> — the inner <Waterfall> is the landmark; nesting three

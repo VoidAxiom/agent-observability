@@ -24,6 +24,7 @@ import {
   type SessionNode,
 } from "../lib/grouping";
 import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
+import { formatAbsoluteEst, formatAbsoluteEstWithDate } from "../lib/formatTime";
 
 export interface SessionSidebarProps {
   sessions: SessionNode[];
@@ -228,6 +229,12 @@ function SessionRow({
     0,
     Math.round((nowMs - node.lastActivity) / 1000),
   );
+  // Absolute EST/EDT clock time of the most recent activity. VOI-389 —
+  // the operator asked for wall-clock visibility; the relative-seconds
+  // form alone hid which actual minute of the day a session last ran.
+  // Falls back to "--" when lastActivity is the DISTANT_PAST sentinel.
+  const lastActivityAbs = formatAbsoluteEst(node.lastActivity);
+  const lastActivityTitle = `last_activity ${formatAbsoluteEstWithDate(node.lastActivity)} (${lastActivityAgeSeconds}s ago)`;
 
   // Per-depth indentation. The wrapper carries the padding so the
   // disclosure triangle's hit target ALSO shifts right with depth —
@@ -312,6 +319,7 @@ function SessionRow({
         data-session-id={node.id}
         data-kind={node.kind}
         data-depth={depth}
+        title={lastActivityTitle}
         style={rowStyle}
       >
         {selected ? (
@@ -343,6 +351,9 @@ function SessionRow({
         </span>
         <span style={sessionMetaStyle}>
           {buildMetaLine(node)}
+        </span>
+        <span style={sessionMetaStyle} data-meta-time="true">
+          {`// last ${lastActivityAbs}`}
         </span>
       </button>
     </div>

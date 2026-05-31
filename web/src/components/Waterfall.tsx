@@ -37,6 +37,7 @@ import { familyToAccentVar, spanNameToFamily } from "../lib/spanFamily";
 import { buildEdgeKey, useCrossProcessStore } from "../lib/crossProcessStore";
 import { bestContrastTextOn } from "../lib/bestContrast";
 import { isSubagent, subagentType } from "../lib/isSubagent";
+import { formatAbsoluteEst, formatAbsoluteEstWithMs } from "../lib/formatTime";
 import "./Waterfall.css";
 
 export interface WaterfallProps {
@@ -52,7 +53,11 @@ export interface WaterfallProps {
 const ROW_HEIGHT = 24;
 const BAR_HEIGHT = 16;
 const BAR_Y_OFFSET = (ROW_HEIGHT - BAR_HEIGHT) / 2;
-const TIME_AXIS_HEIGHT = 24;
+// VOI-389: bumped from 24 -> 36 to make room for the absolute EST/EDT
+// tick labels above the existing relative-duration labels (e.g.
+// "10:32:47 AM EDT" on the top row, "200ms" on the bottom row at each
+// major tick).
+const TIME_AXIS_HEIGHT = 36;
 const LEFT_GUTTER = 0;
 const RIGHT_PAD = 8;
 const MIN_BAR_WIDTH = 1;
@@ -76,6 +81,10 @@ interface BarLayout {
    * 2026-05-30.
    */
   noTimestamp: boolean;
+  /** Span start in ms since epoch; Number.NaN when noTimestamp. */
+  startMs: number;
+  /** Span end in ms since epoch; Number.NaN when noTimestamp. */
+  endMs: number;
 }
 
 interface CrossEdge {
@@ -177,6 +186,7 @@ export function Waterfall({
             originX={LEFT_GUTTER}
             height={TIME_AXIS_HEIGHT}
             totalHeight={totalHeight}
+            traceStartMs={layout.traceStartMs}
           />
           {layout.bars.map((bar) => (
             <WaterfallBar
@@ -220,6 +230,12 @@ interface LayoutResult {
   bars: BarLayout[];
   durationMs: number;
   crossEdges: CrossEdge[];
+  /**
+   * Trace's earliest parseable span start (ms since epoch). NaN when
+   * every span's Timestamp failed to parse. VOI-389 — used to derive
+   * absolute EST/EDT tick labels on the time axis.
+   */
+  traceStartMs: number;
 }
 
 function buildLayout(
@@ -228,7 +244,7 @@ function buildLayout(
   nowMs: number,
 ): LayoutResult {
   if (spans.length === 0 || innerWidth <= 0) {
-    return { bars: [], durationMs: 0, crossEdges: [] };
+    return { bars: [], durationMs: 0, crossEdges: [], traceStartMs: Number.NaN };
   }
 
   const spanById = new Map<string, SpanRow>();
@@ -342,6 +358,8 @@ function buildLayout(
       ancestors: ancestorChain.get(id) ?? new Set(),
       isRunning,
       noTimestamp: false,
+      startMs,
+      endMs,
     });
   });
 
@@ -369,6 +387,8 @@ function buildLayout(
       ancestors: ancestorChain.get(id) ?? new Set(),
       isRunning: false,
       noTimestamp: true,
+      startMs: Number.NaN,
+      endMs: Number.NaN,
     });
   }
 
@@ -410,7 +430,12 @@ function buildLayout(
     });
   }
 
-  return { bars, durationMs: traceDuration, crossEdges };
+  return {
+    bars,
+    durationMs: traceDuration,
+    crossEdges,
+    traceStartMs: hasAnyValid ? minStart : Number.NaN,
+  };
 }
 
 function isStatusUnset(code: string): boolean {
@@ -463,9 +488,13 @@ function WaterfallBar({
   const labelColorVar = bestContrastTextOn(bar.accent);
   const labelFill = `var(${labelColorVar})`;
 
+  // VOI-389: tooltip carries absolute EST/EDT start + end so the operator
+  // can correlate a bar's hover position to wall-clock time without
+  // popping out to the inspector. The formatter already emits the
+  // " EST"/" EDT" suffix; we don't double-append.
   const titleText = bar.noTimestamp
-    ? `${label} — no timestamp (rendered as synthetic minimum-width bar)`
-    : label;
+    ? `${label} — no timestamp (rendered as synthetic minimum-width bar)\nstarted --\nended --`
+    : `${label}\nstarted ${formatAbsoluteEstWithMs(bar.startMs)}\nended ${formatAbsoluteEstWithMs(bar.endMs)}`;
   const ariaLabel = bar.noTimestamp
     ? `${bar.span.SpanName} — depth ${bar.span.depth} — no timestamp`
     : `${bar.span.SpanName} — depth ${bar.span.depth}`;
@@ -554,6 +583,13 @@ interface TimeAxisProps {
   originX: number;
   height: number;
   totalHeight: number;
+  /**
+   * Trace start in ms since epoch — NaN when no span Timestamp parsed.
+   * VOI-389: drives the second row of axis labels (absolute EST/EDT
+   * wall-clock at each major tick). Hidden when NaN so we don't render
+   * a row of "--" placeholders that crowd the relative-duration labels.
+   */
+  traceStartMs: number;
 }
 
 function TimeAxis({
@@ -562,14 +598,31 @@ function TimeAxis({
   originX,
   height,
   totalHeight,
+  traceStartMs,
 }: TimeAxisProps) {
   if (innerWidth <= 0 || durationMs <= 0) return null;
   const ticks = computeTickPositions(durationMs);
+  const showAbsoluteLabels = Number.isFinite(traceStartMs);
+  // Cap absolute-time labels at ~one per 200px (spec § "Axis ticks") so
+  // we never paint overlapping HH:MM:SS strings on narrow viewports.
+  const maxAbsoluteLabels = Math.max(3, Math.min(5, Math.ceil(innerWidth / 200)));
+  // Collect ALL majors first, then thin them out to the target count by
+  // keeping evenly-spaced indices. Pure index math — deterministic.
+  const majorTicks = ticks.filter((t) => t.major);
+  const absoluteIdxSet = new Set<number>();
+  if (showAbsoluteLabels && majorTicks.length > 0) {
+    const stride = Math.max(1, Math.floor(majorTicks.length / maxAbsoluteLabels));
+    for (let i = 0; i < majorTicks.length; i += stride) {
+      absoluteIdxSet.add(majorTicks[i]!.ms);
+      if (absoluteIdxSet.size >= maxAbsoluteLabels) break;
+    }
+  }
 
   return (
     <g aria-hidden="true">
       {ticks.map(({ ms, major }, idx) => {
         const x = originX + (ms / durationMs) * innerWidth;
+        const showAbsolute = major && absoluteIdxSet.has(ms);
         return (
           <g key={`tick-${idx}-${ms}`}>
             <line
@@ -586,6 +639,16 @@ function TimeAxis({
                 y={height - 8}
               >
                 {formatTickMs(ms)}
+              </text>
+            ) : null}
+            {showAbsolute ? (
+              <text
+                className="voi-waterfall-tick-label voi-waterfall-tick-label--absolute"
+                data-absolute-tick="true"
+                x={x + 2}
+                y={height - 20}
+              >
+                {formatAbsoluteEst(traceStartMs + ms)}
               </text>
             ) : null}
           </g>
