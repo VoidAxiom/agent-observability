@@ -456,6 +456,25 @@ else
   fail_case 'case17 second attr already stamped boundary' "unexpected exit; stderr=$(<"$stderr")"
 fi
 
+# 18. Fresh install succeeds when INSTALL_DIR is a symlink spelling of PATH entry.
+tmp="$(new_case_dir)"
+make_fake_codex "$tmp/realbin"
+mkdir -p "$tmp/physdir"
+ln -s "$tmp/physdir" "$tmp/symdir"
+stdout="$tmp/stdout"
+stderr="$tmp/stderr"
+if run_with_capture "$stdout" "$stderr" env -i PATH="$tmp/symdir:$tmp/realbin:$BASE_PATH" INSTALL_DIR="$tmp/symdir" HOME="$tmp/home" bash "$ROOT/scripts/install-codex-shim.sh"; then
+  if [[ -L "$tmp/symdir/codex" ]]; then
+    pass_case 'case18 symlinked install dir codex link exists'
+  else
+    fail_case 'case18 symlinked install dir codex link exists' 'codex link was not created as a symlink'
+  fi
+  codex_target="$(readlink "$tmp/symdir/codex")"
+  assert_contains 'case18 symlinked install dir codex symlink target' "$codex_target" "$ROOT/scripts/codex-shim.sh"
+else
+  fail_case 'case18 symlinked install dir fresh install' "unexpected exit; stderr=$(<"$stderr")"
+fi
+
 if [[ "$FAIL" -ne 0 ]]; then
   printf '\nTEST FAILURES\n' >&2
   exit 1

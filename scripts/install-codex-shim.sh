@@ -154,13 +154,14 @@ hash -r 2>/dev/null || true
 resolved_codex="$(command -v codex || true)"
 printf 'codex-shim: command -v codex -> %s\n' "$resolved_codex"
 if [[ -n "$resolved_codex" ]]; then
-  resolved_dir="$(cd "$(dirname "$resolved_codex")" 2>/dev/null && pwd)" || resolved_dir=""
+  resolved_dir="$(cd "$(dirname "$resolved_codex")" 2>/dev/null && pwd -P)" || resolved_dir=""
   if [[ -n "$resolved_dir" ]]; then
     resolved_codex="$resolved_dir/$(basename "$resolved_codex")"
   fi
 fi
-if [[ "$resolved_codex" != "$codex_link" ]]; then
-  printf 'install-codex-shim: command -v codex resolved to %s, expected %s\n' "$resolved_codex" "$codex_link" >&2
+codex_link_canon="$INSTALL_DIR_CANON/$(basename "$codex_link")"
+if [[ "$resolved_codex" != "$codex_link_canon" ]]; then
+  printf 'install-codex-shim: command -v codex resolved to %s, expected %s\n' "$resolved_codex" "$codex_link_canon" >&2
   exit 1
 fi
 
